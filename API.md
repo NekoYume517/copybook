@@ -1,0 +1,250 @@
+# copybook — API 契约
+
+> **这是实现依据，不得更改签名。** 内部实现自由，但这些公开 API 必须存在且签名一致。
+
+模块名：`moonbit-hack/copybook`，库包：`src`，CLI 包：`cmd/copybook`。
+
+## 1. 编码层 `src/ebcdic.mbt`
+
+EBCDIC ↔ ASCII 映射。使用 **cp037（美国/加拿大）** 作为默认表。
+
+```moonbit
+/// EBCDIC 单字节 -> Unicode 码点
+pub fn ebcdic_to_unicode(byte : Int) -> Int
+
+/// Unicode 码点 -> EBCDIC 单字节（不可表示时返回 None）
+pub fn unicode_to_ebcdic(cp : Int) -> Int?
+
+/// 整块解码，跳过不可打印控制字符由调用方决定
+pub fn ebcdic_decode(bytes : BytesView) -> String
+
+/// 整块编码
+pub fn ebcdic_encode(s : StringView) -> Bytes
+
+/// 是否合法的 EBCDIC 数字（0xF0..0xF9）
+pub fn is_ebcdic_digit(b : Int) -> Bool
+
+/// EBCDIC 空格 0x40
+pub fn is_ebcdic_space(b : Int) -> Bool
+```
+
+要求：
+- 完整 cp037 表（256 项）。无映射的字节解码为 U+FFFD 或原样保留，必须在文档里说明选择。
+- 必须写测试：`A`→0xC1、`0`→0xF0、空格→0x40、往返一致性对全部 256 项。
+
+## 2. Copybook 词法与语法 `src/lexer.mbt` + `src/parser.mbt`
+
+### 词法
+
+```moonbit
+pub(all) enum TokenKind {
+  Identifier(String)   // CUST-ID
+  Level(Int)           // 01, 05, 88
+  PicString(String)    // PIC 9(8) 里的 9(8)，已剥离 PIC 关键字
+  PicX
+  PicN
+  Number(Int)
+  LParen
+  RParen
+  Dot
+  Keyword(String)      // VALUE REDEFINES OCCURS TIMES COMP COMP-3 USAGE SIGN SEPARATE etc
+  Eof
+}
+
+pub(all) struct Token {
+  kind : TokenKind
+  line : Int
+  column : Int
+}
+
+pub fn tokenize(source : StringView) -> Array[Token] raise ParseError
+```
+
+### 语法树
+
+```moonbit
+pub(all) enum PicCategory {
+  Numeric          // PIC 9(...)
+  Alphabetic       // PIC A(...)
+  Alphanumeric     // PIC X(...)
+  National         // PIC N(...)
+  Edited           // 含 Z , . $ 等编辑字符
+}
+
+pub(all) enum Usage {
+  Display          // 默认
+  Comp             // COMP / COMP-4 / BINARY
+  Comp3            // COMP-3 / PACKED-DECIMAL
+  Comp1            // COMP-1 单精度浮点
+  Comp2            // COMP-2 双精度浮点
+}
+
+pub(all) struct PicClause {
+  category : PicCategory
+  digits : Int           // 9(7) -> 7，X(30) -> 30
+  scale : Int            // V99 -> 2；无 V 则为 0
+  signed : Bool          // S 前缀
+  usage : Usage
+  sign_separate : Bool   // SIGN IS ... SEPARATE
+}
+
+pub(all) struct FieldSpec {
+  level : Int
+  name : String
+  pic : PicClause?
+  redefines : String?
+  occurs : Int           // 默认 1
+  occurs_depending_on : String?
+  value_literal : String?
+  children : Array[FieldSpec]
+  line : Int
+}
+
+pub fn parse_copybook(source : StringView) -> Array[FieldSpec] raise ParseError
+```
+
+要求：
+- 支持 `OCCURS n TIMES`、`OCCURS n TO m TIMES`（后者取上界并记录）、`REDEFINES`、`VALUE`、`USAGE`/`COMP`/`COMP-3`。
+- 层级号 `01` 到 `49` 建树；`66`（RENAMES）和 `88`（条件名）单独收集或忽略（文档说明）。
+- 错误要带行列号。
+
+## 3. 布局计算 `src/layout.mbt`
+
+```moonbit
+pub(all) struct FieldLayout {
+  name : String
+  path : String          // "CUSTOMER-RECORD.CUST-NAME"
+  offset : Int           // 字节偏移（相对于记录起点，已含 OCCURS 展开前的基址）
+  byte_length : Int      // 单个元素字节数
+  occurs : Int
+  total_length : Int     // byte_length * occurs
+  pic : PicClause
+  level : Int
+  redefine_group : Int   // 同一 REDEFINES 组的 id，0 表示不参与
+}
+
+pub(all) struct RecordLayout {
+  name : String
+  byte_length : Int
+  fields : Array[FieldLayout]     // 仅叶子字段，按偏移排序
+  all_fields : Array[FieldLayout> // 含中间层
+}
+
+pub fn compile_layout(specs : Array[FieldSpec]) -> RecordLayout raise ParseError
+
+/// 按名字查字段（大小写不敏感，支持点分路径）
+pub fn RecordLayout::find(self : RecordLayout, name : StringView) -> FieldLayout?
+```
+
+字节数计算规则（**必须精确**）：
+
+| PIC | Usage | 字节数 |
+|---|---|---|
+| `X(n)` / `A(n)` | Display | n |
+| `9(n)` | Display (zoned) | n |
+| `S9(n)` | Display | n（符号覆盖末位） |
+| `9(n)` | COMP | 1 if n≤4, 2 if n≤9, 4 if n≤18 |
+| `9(n)` | COMP-3 | (n + 2) / 2 整除，即 ceil((n+1)/2) |
+| `S9(n)V9(m)` | COMP-3 | ceil((n+m+1)/2) |
+| `N(n)` | Display | n * 2 |
+| `SIGN SEPARATE` | Display | n + 1 |
+
+## 4. 解码 `src/decode.mbt`
+
+```moonbit
+pub(all) enum CellValue {
+  Null
+  Text(String)
+  Int(Int64)
+  Decimal(Decimal)      // 定点小数，见下
+  Bool(Bool)
+  Bytes(Bytes)
+}
+
+pub(all) struct Decimal {
+  coefficient : Int64      // 去掉小数点的整数部分
+  scale : Int              // 小数位数
+  negative : Bool
+}
+
+pub fn Decimal::to_string(self : Decimal) -> String
+pub fn Decimal::from_parts(coef : Int64, scale : Int, neg : Bool) -> Decimal
+
+pub(all) enum DecodeError {
+  RecordTooShort(expected : Int, actual : Int)
+  InvalidNumeric(offset : Int, detail : String)
+  InvalidEbcdic(offset : Int, byte : Int)
+  FieldOutOfBounds(field : String, offset : Int, length : Int)
+} derive(Eq, Debug)
+
+/// 解码一条记录为 Map[字段路径, 值]
+pub fn decode_record(layout : RecordLayout, record : BytesView) -> Result[Map[String, CellValue], DecodeError]
+
+/// 解码为有序数组（顺序同 layout.fields）
+pub fn decode_record_ordered(layout : RecordLayout, record : BytesView) -> Result[Array[CellValue], DecodeError]
+
+/// 批量解码
+pub fn decode_records(layout : RecordLayout, data : BytesView, record_length : Int) -> Result[Array[Map[String, CellValue]], DecodeError]
+```
+
+规则：
+- zoned decimal：每个字节低 4 位是数字；**最后一个字节的高 4 位是符号**（`0xC`/`0xF` 正，`0xD` 负）。
+- packed decimal（COMP-3）：每字节两半字节；最后一字节低 4 位是符号。
+- COMP 二进制：按字节数用**大端**读取，有符号用补码。
+- 文本字段：EBCDIC 解码后 `trim_end` 空格（0x40）。
+- **绝不静默修正非法数据**，返回 `DecodeError`。
+
+## 5. 编码（往返）`src/encode.mbt`
+
+```moonbit
+pub fn encode_record(layout : RecordLayout, values : Map[String, CellValue]) -> Result[Bytes, DecodeError]
+pub fn encode_records(layout : RecordLayout, rows : Array[Map[String, CellValue]]) -> Result[Bytes, DecodeError]
+```
+
+要求：`decode → encode` 必须逐字节还原（写往返测试，随机数据 500 条）。
+
+## 6. 输出格式 `src/output.mbt`
+
+```moonbit
+/// JSONL：每行一个 JSON 对象
+pub fn render_jsonl(layout : RecordLayout, rows : Array[Map[String, CellValue]]) -> String
+
+/// 定宽文本表格（给人看）
+pub fn render_table(layout : RecordLayout, rows : Array[Map[String, CellValue]]) -> String
+
+/// 布局报告：字段名 / 偏移 / 长度 / 类型
+pub fn render_layout(layout : RecordLayout) -> String
+```
+
+`render_layout` 示例输出（**必须长这样**）：
+
+```
+RECORD: CUSTOMER-RECORD            LENGTH: 43 bytes
+
+OFFSET  LENGTH  OCCURS  TYPE              NAME
+     0       8       1  9(8) DISPLAY      CUSTOMER-RECORD.CUST-ID
+     8      30       1  X(30) DISPLAY     CUSTOMER-RECORD.CUST-NAME
+    38       5       1  S9(9)V99 COMP-3   CUSTOMER-RECORD.BALANCE
+```
+
+## 7. CLI `cmd/copybook/main.mbt`
+
+```
+copybook layout --copybook <file.cpy>
+copybook decode --copybook <file.cpy> --data <file.dat> [--format jsonl|table] [--record-length N]
+copybook encode --copybook <file.cpy> --json <file.jsonl> --out <file.dat>
+copybook verify --copybook <file.cpy> --data <file.dat>     # 往返自检
+```
+
+退出码：0 成功，1 数据错误，2 用法错误。
+
+## 8. 测试要求
+
+至少覆盖：
+- EBCDIC 全 256 往返
+- 每种 PIC/USAGE 组合的字节数（表驱动）
+- zoned/packed 正负数解码
+- OCCURS 展开
+- REDEFINES
+- 记录过短报错
+- 随机数据 create→decode→encode→compare（属性测试）
