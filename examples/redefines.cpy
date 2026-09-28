@@ -1,0 +1,7 @@
+01  ACCOUNT-MASTER.
+    05  ACCT-NO        PIC 9(12).
+    05  ACCT-TYPE      PIC X(2).
+    05  LIMIT-AMT      PIC S9(9)V99 COMP-3.
+    05  ALT-VIEW REDEFINES LIMIT-AMT.
+        10  RAW-BYTE   PIC X(6).
+    05  SSN            PIC 9(9).

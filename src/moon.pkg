@@ -1,0 +1,8 @@
+import {
+}
+
+import {
+  "moonbit-hack/copybook/src" @copybook,
+} for "wbtest"
+
+pkgtype(kind: "library")
