@@ -228,7 +228,74 @@ test "raises" {
 
 `inspect(x, content="...")` 比对 `Show` 输出，注意 `1.0` 会显示成 `1`。
 
-## 8. 常见坑汇总
+## 8. 数学库（实测）
+
+```moonbit
+@math.pow(a, b)
+@math.exp(x)
+@math.ln(x)        // ⚠️ 是 ln，不是 log
+@math.log2(x) / @math.log10(x)
+@math.floor / ceil / round
+```
+
+## 9. 进程退出码（CLI 必须）
+
+```moonbit
+// moonbitlang/x/sys
+@sys.exit(0)    // 成功
+@sys.exit(1)    // 数据错误
+@sys.exit(2)    // 用法错误
+```
+`fn main` 只能返回 Unit，退出码靠 `@sys.exit`。
+
+## 10. 浮点测试的三个坑（**必读，会浪费你很多时间**）
+
+### 坑 A：不支持科学计数法字面量
+
+```moonbit
+assert_true(x < 1e-9)          // ❌ Parse error
+assert_true(x < 0.000000001)   // ✅
+```
+
+### 坑 B：`inspect` 对 Double 是精确字符串比对
+
+```moonbit
+inspect(ef[0], content="2.6")   // ❌ 实际是 "2.6" 但 2.7 会变成 "2.7000000000000003"
+inspect(x, content="2.8000000000000003")  // ❌ 又脆又丑
+```
+
+**正确做法：用容差断言，不要用 `inspect` 比浮点。**
+
+```moonbit
+let d = ef[0] - 2.6
+assert_true(d.abs() < 0.000000001)
+```
+
+### 坑 C：表达式里直接比较可能解析失败
+
+```moonbit
+// ❌ 有时解析器不接受
+assert_true((ef[0] - 2.6).abs() < 0.000000001)
+// ✅ 先绑定到变量
+let d = ef[0] - 2.6
+assert_true(d.abs() < 0.000000001)
+```
+
+### 坑 D：位运算优先级
+
+```moonbit
+if (mask >> i) & 1 == 0 { }        // ❌ Expr Type Mismatch
+if ((mask >> i) & 1) == 0 { }      // ✅ 位运算必须自己加括号
+```
+
+### 坑 E：枚举比较需要 Eq
+
+```moonbit
+pub(all) enum R { Ok; Val(Int) } derive(Debug)      // ❌ expected == op.result 报错
+pub(all) enum R { Ok; Val(Int) } derive(Eq, Debug)  // ✅
+```
+
+## 11. 常见坑汇总
 
 | 现象 | 原因 / 解法 |
 |---|---|
@@ -241,3 +308,7 @@ test "raises" {
 | `Function with error is not allowed in fn main` | 写成 `fn main raise` |
 | `{}` 歧义警告 | 用 `Map([])` / `Json::empty_object()` |
 | `derive(Show)` 弃用 | 用 `derive(Debug)`；数组用 `\{...}` 插值需元素实现 `Show` |
+| `is a trait, not a type` | MoonBit 无 trait object，用泛型约束或枚举包装 |
+| `1e-9` Parse error | 不支持科学计数法，写 `0.000000001` |
+| `Int` 溢出成负数 | 32 位有符号，LCG 乘法后要 `& 0x7FFFFFFF` |
+| 位运算比较报类型错 | 加括号：`((a >> b) & 1) == 0` |

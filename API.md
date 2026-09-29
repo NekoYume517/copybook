@@ -136,18 +136,55 @@ pub fn compile_layout(specs : Array[FieldSpec]) -> RecordLayout raise ParseError
 pub fn RecordLayout::find(self : RecordLayout, name : StringView) -> FieldLayout?
 ```
 
-字节数计算规则（**必须精确**）：
+字节数计算规则（**必须精确，这是全项目最容易错的地方**）：
 
 | PIC | Usage | 字节数 |
 |---|---|---|
 | `X(n)` / `A(n)` | Display | n |
 | `9(n)` | Display (zoned) | n |
-| `S9(n)` | Display | n（符号覆盖末位） |
-| `9(n)` | COMP | 1 if n≤4, 2 if n≤9, 4 if n≤18 |
-| `9(n)` | COMP-3 | (n + 2) / 2 整除，即 ceil((n+1)/2) |
-| `S9(n)V9(m)` | COMP-3 | ceil((n+m+1)/2) |
+| `S9(n)` | Display | n（符号覆盖末位，**不加字节**） |
+| `9(n)` | COMP | n≤4 → 1；n≤9 → 2；n≤18 → 4 |
+| `S9(n)` | COMP | 同上（**符号不额外占字节**） |
+| `9(n)` | COMP-3 (无符号) | ceil((n + 1) / 2) |
+| `S9(n)V9(m)` | COMP-3 | ceil((n + m + 1) / 2) |
 | `N(n)` | Display | n * 2 |
-| `SIGN SEPARATE` | Display | n + 1 |
+| 任意 | `SIGN ... SEPARATE` | +1 |
+
+**权威布局答案（已用 Python 交叉核对，测试必须匹配）：**
+
+`customer.cpy` → **总长 54 字节**
+
+```
+CUST-ID         offset  0  len  8
+CUST-NAME       offset  8  len 30
+BALANCE         offset 38  len  5     (S9(7)V99 COMP-3 → ceil((7+2+1)/2)=5)
+OPEN-DATE       offset 43  len  8
+FLAGS.ACTIVE    offset 51  len  1
+FLAGS.TIER      offset 52  len  2
+```
+
+`order.cpy` → **总长 98 字节**
+
+```
+ORDER-ID        offset  0  len 10
+LINE-COUNT      offset 10  len  3
+LINES × 5       offset 13  每条 17 字节 = 85
+    SKU         len 12
+    QTY         len  1     (S9(4) COMP → n≤4 → 1 字节，不是 2！)
+    PRICE       len  4     (S9(5)V99 COMP-3 → ceil((5+2+1)/2)=4)
+TOTAL = 10 + 3 + 85 = 98
+```
+
+`redefines.cpy` → `LIMIT-AMT` (S9(9)V99 COMP-3 = 6 字节) 与 `ALT-VIEW` 的 `RAW-BYTE` X(6)
+**共享同一偏移**，不累加：
+```
+ACCT-NO         offset  0  len 12
+ACCT-TYPE       offset 12  len  2
+LIMIT-AMT       offset 14  len  6
+RAW-BYTE        offset 14  len  6     ← REDEFINES，同偏移
+SSN             offset 20  len  9
+TOTAL = 12 + 2 + 6 + 9 = 29
+```
 
 ## 4. 解码 `src/decode.mbt`
 
@@ -216,15 +253,18 @@ pub fn render_table(layout : RecordLayout, rows : Array[Map[String, CellValue]])
 pub fn render_layout(layout : RecordLayout) -> String
 ```
 
-`render_layout` 示例输出（**必须长这样**）：
+`render_layout` 示例输出（**必须长这样，数字是权威答案**）：
 
 ```
-RECORD: CUSTOMER-RECORD            LENGTH: 43 bytes
+RECORD: CUSTOMER-RECORD                          LENGTH: 54 bytes
 
 OFFSET  LENGTH  OCCURS  TYPE              NAME
      0       8       1  9(8) DISPLAY      CUSTOMER-RECORD.CUST-ID
      8      30       1  X(30) DISPLAY     CUSTOMER-RECORD.CUST-NAME
-    38       5       1  S9(9)V99 COMP-3   CUSTOMER-RECORD.BALANCE
+    38       5       1  S9(7)V99 COMP-3   CUSTOMER-RECORD.BALANCE
+    43       8       1  9(8) DISPLAY      CUSTOMER-RECORD.OPEN-DATE
+    51       1       1  X(1) DISPLAY      CUSTOMER-RECORD.FLAGS.ACTIVE
+    52       2       1  9(2) DISPLAY      CUSTOMER-RECORD.FLAGS.TIER
 ```
 
 ## 7. CLI `cmd/copybook/main.mbt`
