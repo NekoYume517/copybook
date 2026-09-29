@@ -58,12 +58,15 @@ copybook verify --copybook examples/customer.cpy --data examples/customer.dat
 `layout` 输出：
 
 ```
-RECORD: CUSTOMER-RECORD            LENGTH: 43 bytes
+RECORD: CUSTOMER-RECORD                          LENGTH: 54 bytes
 
 OFFSET  LENGTH  OCCURS  TYPE              NAME
      0       8       1  9(8) DISPLAY      CUSTOMER-RECORD.CUST-ID
      8      30       1  X(30) DISPLAY     CUSTOMER-RECORD.CUST-NAME
-    38       5       1  S9(9)V99 COMP-3   CUSTOMER-RECORD.BALANCE
+    38       5       1  S9(7)V99 COMP-3   CUSTOMER-RECORD.BALANCE
+    43       8       1  9(8) DISPLAY      CUSTOMER-RECORD.OPEN-DATE
+    51       1       1  X(1) DISPLAY      CUSTOMER-RECORD.FLAGS.ACTIVE
+    52       2       1  9(2) DISPLAY      CUSTOMER-RECORD.FLAGS.TIER
 ```
 
 ## 支持的 COBOL 子集
