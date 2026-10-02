@@ -146,6 +146,31 @@ test "pic: S 不在首位报错" {
 }
 
 ///|
+test "pic: 编辑型 digits/scale 与 pic_storage_len 的分工" {
+  // digits/scale 只数数字位；存储长度要另外算（含插入字符）
+  let p = pic("ZZ,ZZ9.99")
+  assert_eq(p.digits, 5) // ZZ ZZ 9
+  assert_eq(p.scale, 2) // 99
+  assert_eq(@src.pic_storage_len("ZZ,ZZ9.99"), 9) // Z Z , Z Z 9 . 9 9
+  // 数字型：V 是隐含小数点，占一位但不是数字位
+  assert_eq(pic("S9(7)V99").digits + pic("S9(7)V99").scale, 9)
+  assert_eq(@src.pic_storage_len("S9(7)V99"), 11) // S + 7 个 9 + V + 2 个 9
+  // 注意：Display 下 COBOL 的隐含 V 并不占存储，S 也不占；
+  // 精确字节数由 layout 层按 PIC/USAGE 规则算，这里只给出"模式串展开字符数"。
+}
+
+///|
+test "pic: 编辑型 CR/DB 后缀不占数字位但占存储" {
+  let p = pic("9(5)CR")
+  assert_eq(p.digits, 5)
+  assert_eq(p.scale, 0)
+  assert_eq(@src.pic_storage_len("9(5)CR"), 7)
+  let q = pic("9(5)DB")
+  assert_eq(q.digits, 5)
+  assert_eq(@src.pic_storage_len("9(5)DB"), 7)
+}
+
+///|
 test "pic: 括号不匹配报错" {
   assert_true(pic_err("9(8").contains("没有匹配的 ')'"))
   assert_true(pic_err("9)8").contains("多余的 ')'"))
@@ -300,7 +325,7 @@ fn render_into(
 
 ///|
 test "tree: customer.cpy 的层级结构" {
-  let src = "01  CUSTOMER-RECORD.\n    05  CUST-ID        PIC 9(8).\n    05  CUST-NAME      PIC X(30).\n    05  BALANCE        PIC S9(7)V99 COMP-3.\n    05  OPEN-DATE      PIC 9(8).\n    05  FLAGS.\n        10  ACTIVE     PIC X(1).\n        10  TIER       PIC 9(2)."
+  let src = "01  CUSTOMER-RECORD.\n    05  CUST-ID        PIC 9(8).\n    05  CUST-NAME      PIC X(30).\n    05  BALANCE        PIC S9(7)V99 COMP-3.\n    05  OPEN-DATE      PIC 9(8).\n    05  FLAGS.\n        10  ACTIVE     PIC X(1).\n        10  TIER       PIC 9(2).\n"
   let roots = @src.parse_copybook(src)
   assert_eq(roots.length(), 1)
   assert_eq(
@@ -603,7 +628,7 @@ test "err: 语法错误行列号可单独取出" {
 
 ///|
 test "examples: customer.cpy 完整解析" {
-  let src = "01  CUSTOMER-RECORD.\n    05  CUST-ID        PIC 9(8).\n    05  CUST-NAME      PIC X(30).\n    05  BALANCE        PIC S9(7)V99 COMP-3.\n    05  OPEN-DATE      PIC 9(8).\n    05  FLAGS.\n        10  ACTIVE     PIC X(1).\n        10  TIER       PIC 9(2)."
+  let src = "01  CUSTOMER-RECORD.\n    05  CUST-ID        PIC 9(8).\n    05  CUST-NAME      PIC X(30).\n    05  BALANCE        PIC S9(7)V99 COMP-3.\n    05  OPEN-DATE      PIC 9(8).\n    05  FLAGS.\n        10  ACTIVE     PIC X(1).\n        10  TIER       PIC 9(2).\n"
   let roots = @src.parse_copybook(src)
   assert_eq(roots.length(), 1)
   let rec = roots[0]
@@ -697,4 +722,23 @@ test "examples: redefines.cpy 完整解析" {
     }
     None => fail("LIMIT-AMT 应为基本项")
   }
+}
+
+///|
+test "examples: 固定列格式（前 6 列序号）也能解析" {
+  // 把 customer.cpy 改写成经典定长格式：6 位序号 + 第 7 列空格
+  let src = "000100 01  CUSTOMER-RECORD.\n000200     05  CUST-ID        PIC 9(8).\n000300     05  CUST-NAME      PIC X(30).\n000400     05  BALANCE        PIC S9(7)V99 COMP-3.\n000500     05  OPEN-DATE      PIC 9(8).\n000600     05  FLAGS.\n000700         10  ACTIVE     PIC X(1).\n000800         10  TIER       PIC 9(2)."
+  let roots = @src.parse_copybook(src)
+  assert_eq(roots.length(), 1)
+  assert_eq(roots[0].name, "CUSTOMER-RECORD")
+  assert_eq(roots[0].children.length(), 5)
+  assert_eq(roots[0].children[4].children.length(), 2)
+}
+
+///|
+test "examples: 注释行混在数据行之间" {
+  let src = "* 客户主档\n01  CUSTOMER-RECORD.\n    05  CUST-ID        PIC 9(8).\n* 下面是金额\n    05  BALANCE        PIC S9(7)V99 COMP-3."
+  let roots = @src.parse_copybook(src)
+  assert_eq(roots[0].children.length(), 2)
+  assert_eq(roots[0].children[1].name, "BALANCE")
 }
