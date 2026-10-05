@@ -8,7 +8,7 @@ repository = "https://github.com/moonbit-hack/copybook"
 
 license = "Apache-2.0"
 
-keywords = ["cobol", "copybook", "ebcdic", "fixed-record", "legacy-data"]
+keywords = [ "cobol", "copybook", "ebcdic", "fixed-record", "legacy-data" ]
 
 preferred_target = "wasm"
 
