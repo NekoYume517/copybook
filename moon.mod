@@ -1,10 +1,10 @@
-name = "moonbit-hack/copybook"
+name = "NekoYume517/copybook"
 
 version = "0.1.0"
 
 readme = "README.md"
 
-repository = "https://github.com/moonbit-hack/copybook"
+repository = "https://github.com/NekoYume517/copybook"
 
 license = "Apache-2.0"
 
@@ -17,3 +17,6 @@ description = "COBOL copybook compiler: fixed-length EBCDIC/COMP-3 record decodi
 import {
   "moonbitlang/x@0.5.5",
 }
+
+
+
