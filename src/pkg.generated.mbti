@@ -1,0 +1,219 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "moonbit-hack/copybook/src"
+
+import {
+  "moonbitlang/core/debug",
+}
+
+// Values
+pub fn align_scale(Decimal, Int, Int) -> Result[Decimal, DecodeError]
+
+pub fn compile_layout(Array[FieldSpec]) -> RecordLayout raise ParseError
+
+pub fn decode_record(RecordLayout, BytesView) -> Result[Map[String, CellValue], DecodeError]
+
+pub fn decode_record_ordered(RecordLayout, BytesView) -> Result[Array[CellValue], DecodeError]
+
+pub fn decode_record_strict(RecordLayout, BytesView) -> Result[Map[String, CellValue], DecodeError]
+
+pub fn decode_records(RecordLayout, BytesView, Int) -> Result[Array[Map[String, CellValue]], DecodeError]
+
+pub fn ebcdic_char_to_unicode(Int) -> Char
+
+pub fn ebcdic_decode(BytesView) -> String
+
+pub fn ebcdic_encode(StringView) -> Bytes
+
+pub fn ebcdic_encode_strict(StringView) -> Array[Int]?
+
+pub fn ebcdic_has_mapping(Int) -> Bool
+
+pub fn ebcdic_is_printable(Int) -> Bool
+
+pub fn ebcdic_to_unicode(Int) -> Int
+
+pub fn encode_record(RecordLayout, Map[String, CellValue]) -> Result[Bytes, DecodeError]
+
+pub fn encode_records(RecordLayout, Array[Map[String, CellValue]]) -> Result[Bytes, DecodeError]
+
+pub fn is_ebcdic_digit(Int) -> Bool
+
+pub fn is_ebcdic_space(Int) -> Bool
+
+pub fn parse_copybook(StringView) -> Array[FieldSpec] raise ParseError
+
+pub fn parse_copybook_conditions(StringView) -> Array[ConditionName] raise ParseError
+
+pub fn parse_copybook_renames(StringView) -> Array[RenamesEntry] raise ParseError
+
+pub fn parse_copybook_with_extras(StringView) -> (Array[FieldSpec], Array[ConditionName], Array[RenamesEntry]) raise ParseError
+
+pub fn parse_jsonl_row(RecordLayout, String) -> Result[Map[String, CellValue], String]
+
+pub fn parse_pic_clause(String, Int, Int) -> PicClause raise ParseError
+
+pub fn pic_storage_len(String) -> Int
+
+pub fn pic_type_name(PicClause) -> String
+
+pub fn render_jsonl(RecordLayout, Array[Map[String, CellValue]]) -> String
+
+pub fn render_layout(RecordLayout) -> String
+
+pub fn render_table(RecordLayout, Array[Map[String, CellValue]]) -> String
+
+pub fn roundtrip_check(RecordLayout, BytesView) -> Result[Int?, DecodeError]
+
+pub fn token_at(Array[Token], Int) -> Token
+
+pub fn token_kinds_text(Array[Token]) -> String
+
+pub fn tokenize(StringView) -> Array[Token] raise ParseError
+
+pub fn unicode_char_to_ebcdic(Char) -> Int?
+
+pub fn unicode_to_ebcdic(Int) -> Int?
+
+// Errors
+pub(all) suberror DecodeError {
+  RecordTooShort(Int, Int)
+  InvalidNumeric(Int, String)
+  InvalidEbcdic(Int, Int)
+  FieldOutOfBounds(String, Int, Int)
+} derive(@debug.Debug)
+pub fn DecodeError::to_display(Self) -> String
+
+pub(all) suberror ParseError {
+  LexError(Int, Int, String)
+  SyntaxError(Int, Int, String)
+  InvalidLayout(String)
+}
+pub fn ParseError::at(Int, Int, String) -> Self
+pub fn ParseError::column(Self) -> Int
+pub fn ParseError::invalid_layout(String) -> Self
+pub fn ParseError::line(Self) -> Int
+pub fn ParseError::message(Self) -> String
+pub fn ParseError::to_display(Self) -> String
+
+// Types and methods
+pub(all) enum CellValue {
+  Null
+  Text(String)
+  Int(Int64)
+  Decimal(Decimal)
+  Bool(Bool)
+  Bytes(Bytes)
+}
+pub fn CellValue::to_display(Self) -> String
+
+pub(all) struct ConditionName {
+  name : String
+  parent : String
+  values : Array[String]
+  line : Int
+}
+
+pub(all) struct Decimal {
+  coefficient : Int64
+  scale : Int
+  negative : Bool
+}
+pub fn Decimal::from_parts(Int64, Int, Bool) -> Self
+pub fn Decimal::to_string(Self) -> String
+
+pub(all) struct FieldLayout {
+  name : String
+  path : String
+  offset : Int
+  byte_length : Int
+  occurs : Int
+  total_length : Int
+  pic : PicClause
+  level : Int
+  redefine_group : Int
+}
+
+pub(all) struct FieldSpec {
+  level : Int
+  name : String
+  pic : PicClause?
+  redefines : String?
+  occurs : Int
+  occurs_min : Int
+  occurs_depending_on : String?
+  value_literal : String?
+  children : Array[FieldSpec]
+  line : Int
+  group_usage : Usage?
+}
+
+pub(all) enum PicCategory {
+  Numeric
+  Alphabetic
+  Alphanumeric
+  National
+  Edited
+}
+pub fn PicCategory::name(Self) -> String
+
+pub(all) struct PicClause {
+  category : PicCategory
+  digits : Int
+  scale : Int
+  signed : Bool
+  usage : Usage
+  sign_separate : Bool
+  pic_text : String
+}
+
+pub(all) struct RecordLayout {
+  name : String
+  byte_length : Int
+  fields : Array[FieldLayout]
+  all_fields : Array[FieldLayout]
+}
+pub fn RecordLayout::covered_bytes(Self) -> Int
+pub fn RecordLayout::find(Self, StringView) -> FieldLayout?
+
+pub(all) struct RenamesEntry {
+  name : String
+  from : String
+  thru : String?
+  line : Int
+}
+
+pub(all) struct Token {
+  kind : TokenKind
+  line : Int
+  column : Int
+}
+pub fn Token::describe(Self) -> String
+
+pub(all) enum TokenKind {
+  Identifier(String)
+  Level(Int)
+  PicString(String)
+  PicX
+  PicN
+  Number(Int)
+  StringLiteral(String)
+  LParen
+  RParen
+  Dot
+  Keyword(String)
+  Eof
+}
+pub fn TokenKind::describe(Self) -> String
+
+pub(all) enum Usage {
+  Display
+  Comp
+  Comp3
+  Comp1
+  Comp2
+}
+pub fn Usage::name(Self) -> String
+
+// Type aliases
+
+// Traits
