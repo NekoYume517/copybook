@@ -306,6 +306,14 @@ fn cmd_decode(opts : Options) -> Int32 {
     )
     return EXIT_USAGE
   }
+  // 空文件不是「成功解码了 0 条记录」，而是没有数据可解。
+  // 静默返回 0 会让调用方（尤其是脚本）误以为文件正常。
+  if data.length() == 0 {
+    eprintln(
+      "decode: data file '\{data_path}' is empty (expected \{rec_len}-byte records)",
+    )
+    return EXIT_DATA
+  }
   match @lib.decode_records(layout, data, rec_len) {
     Err(e) => {
       eprintln("decode: " + e.to_display())
