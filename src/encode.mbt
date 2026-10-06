@@ -284,13 +284,68 @@ fn encode_text(
 }
 
 ///|
+/// 把 `Decimal` 的 scale 对齐到字段期望的 scale。
+///
+/// **这是 JSON 往返保真的关键。** JSON 没有定点小数类型：`5.00` 序列化成
+/// `5` 再读回来，`parse_decimal_text("5")` 给出的是 `scale=0, coef=5`，
+/// 而字段需要 `scale=2`（即 500 分）。若不在这里对齐，就会把 `5.00` 写成
+/// 分币值 `0.05` —— 100 倍的数据损坏，而且**不会报错**。
+///
+/// 规则：
+///   - 实际 scale 小于期望 → 系数乘以 10 的幂（`5` → `500`）
+///   - 实际 scale 大于期望 → 多出来的低位必须全为零，否则报精度损失
+///   - 相等 → 原样返回
+pub fn align_scale(
+  d : Decimal,
+  expected : Int32,
+  offset : Int32,
+) -> Result[Decimal, DecodeError] {
+  if d.scale == expected {
+    return Ok(d)
+  }
+  if d.scale < expected {
+    let mut coef = d.coefficient
+    let mut k = d.scale
+    while k < expected {
+      // Int64 上限约 9.2e18，留一位余量防乘法溢出
+      if coef > 922337203685477580L || coef < -922337203685477580L {
+        return Err(
+          InvalidNumeric(
+            offset, "decimal overflows Int64 after scale alignment",
+          ),
+        )
+      }
+      coef = coef * 10L
+      k = k + 1
+    }
+    Ok(Decimal::from_parts(coef, expected, d.negative))
+  } else {
+    let mut coef = d.coefficient
+    let mut k = d.scale
+    while k > expected {
+      if coef % 10L != 0L {
+        return Err(
+          InvalidNumeric(
+            offset, "value has more fractional digits than the field allows",
+          ),
+        )
+      }
+      coef = coef / 10L
+      k = k - 1
+    }
+    Ok(Decimal::from_parts(coef, expected, d.negative))
+  }
+}
+
+///|
 /// 把 `CellValue` 归一化为 `Decimal`（数值字段用）。
 ///
 /// 接受三种输入：
-///   - `Decimal` 直接使用
-///   - `Int` 视为 scale=0 的整数
-///   - `Text` 解析成十进制串（便于从 JSONL 读回来）
+///   - `Decimal` 直接用，scale 对齐到字段
+///   - `Int` 视为 scale=0 的整数，再对齐到字段
+///   - `Text` 解析成十进制串（便于从 JSONL 读回来），再对齐到字段
 ///
+/// 三者最后都经过 `align_scale`，保证「值」而不是「文本形状」决定编码结果。
 /// 其余类型报错 —— 不猜。
 fn as_decimal(
   v : CellValue,
@@ -298,11 +353,12 @@ fn as_decimal(
   expected_scale : Int32,
 ) -> Result[Decimal, DecodeError] {
   match v {
-    Decimal(d) => Ok(d)
-    Int(i) => Ok(Decimal::from_parts(i, expected_scale, i < 0L))
+    Decimal(d) => align_scale(d, expected_scale, offset)
+    Int(i) =>
+      align_scale(Decimal::from_parts(i, 0, i < 0L), expected_scale, offset)
     Text(s) =>
       match parse_decimal_text(s) {
-        Some(d) => Ok(d)
+        Some(d) => align_scale(d, expected_scale, offset)
         None =>
           Err(InvalidNumeric(offset, "cannot parse '\{s}' as a decimal number"))
       }

@@ -48,12 +48,22 @@ copybook decode --copybook examples/customer.cpy --data examples/customer.dat --
 # 解码成定宽文本表格
 copybook decode --copybook examples/customer.cpy --data examples/customer.dat --format table
 
-# 编码回去（往返验证）
-copybook encode --copybook examples/customer.cpy --json out.jsonl --out roundtrip.dat
-
-# 自检：解码再编码，逐字节比对
+# 自检：解码再编码，逐字节比对（纯内存路径）
 copybook verify --copybook examples/customer.cpy --data examples/customer.dat
+
+# 完整的「解码 → 编辑 → 编码」工作流（经过 JSON 文本）
+copybook decode --copybook examples/customer.cpy --data examples/customer.dat --format jsonl > out.jsonl
+copybook encode --copybook examples/customer.cpy --json out.jsonl --out roundtrip.dat
+# roundtrip.dat 与 examples/customer.dat 逐字节相同
 ```
+
+> `verify` 走的是内存内 decode→encode，不经过 JSON。要验证「导出成 JSON 再导回」
+> 这条真实工作流，用上面最后两条命令，然后比较文件。这两条路径不同，都测过。
+
+> 注意 `decode --format jsonl` 把定点小数写成 JSON 数字（`1234567.89`）。
+> JSON 没有定点类型，`5.00` 会序列化成 `5`；编码器按字段声明的 scale
+> （`PIC S9(7)V99` → 2 位小数）还原，因此 `5` 仍被正确写成 `500` 分。
+> 这一点有专门的回归测试（`src/json_roundtrip_test.mbt`）。
 
 `layout` 输出：
 
