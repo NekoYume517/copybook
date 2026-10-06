@@ -3,7 +3,7 @@ import {
 }
 
 import {
-  "moonbit-hack/copybook/src" @copybook,
+  "NekoYume517/copybook/src" @copybook,
 } for "wbtest"
 
 pkgtype(kind: "library")
@@ -11,3 +11,4 @@ pkgtype(kind: "library")
 options(
   warn_list: "-implicit_impl_as_method-unused_package-test_unqualified_package-deprecated",
 )
+

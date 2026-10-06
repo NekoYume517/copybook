@@ -1,8 +1,9 @@
 import {
-  "moonbit-hack/copybook/src" @lib,
+  "NekoYume517/copybook/src" @lib,
   "moonbitlang/x/fs",
   "moonbitlang/x/sys",
   "moonbitlang/core/env",
 }
 
 pkgtype(kind: "executable")
+
