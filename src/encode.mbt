@@ -158,7 +158,10 @@ fn encode_packed(
         ),
       )
   }
-  let sign_nibble = if d.negative { 0xD } else { 0xC }
+  // 无符号字段的 -0：packed 虽有独立符号半字节，但无符号字段解出负号会
+  // 被 decode 拒绝（"unsigned packed decimal has negative sign"），编码
+  // 出一条自己都解不回的记录是自相矛盾的输出 —— 统一按正号写 0xC。
+  let sign_nibble = if d.negative && pic.signed { 0xD } else { 0xC }
   // 数字串 + 符号半字节，按半字节流写出
   let mut digit_index = 0
   for i = 0; i < bytes_needed; i = i + 1 {

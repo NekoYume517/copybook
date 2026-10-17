@@ -268,3 +268,20 @@ test "audit: 数字位超过 18 的 PIC 在解析期报错" {
   let ok = parse_copybook("01 R.\n  05 A PIC S9(17)V9(1).")
   assert_eq(ok.length(), 1)
 }
+test "audit: 无符号 COMP-3 的 -0 编码后必须仍可解码" {
+  let layout = compile_layout(parse_copybook("01 R.\n  05 A PIC 9(3) COMP-3.\n"))
+  let m : Map[String, CellValue] = Map([])
+  m["R.A"] = Decimal(Decimal::from_parts(0L, 0, true))
+  let bytes = encode_record(layout, m).unwrap()
+  // 解码必须成功（packed 符号半字节 0xD 出现在无符号字段会报错）
+  match decode_record_ordered(layout, bytes) {
+    Ok(v) =>
+      match v[0] {
+        Decimal(d) => {
+          assert_true(d.coefficient == 0L)
+        }
+        _ => fail("expected Decimal")
+      }
+    Err(e) => fail(e.to_display())
+  }
+}
