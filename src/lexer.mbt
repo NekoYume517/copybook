@@ -224,26 +224,38 @@ fn is_ascii_letter(c : Char) -> Bool {
 }
 
 ///|
-/// 按 `\n` 切行，保留空行（行号必须与源文件一致，否则报错位置会错位）
+/// 按 `\n` / `\r\n` / `\r` 切行，保留空行（行号必须与源文件一致，
+/// 否则报错位置会错位）。
+///
+/// Windows 编辑器存 CRLF、Unix 存 LF、老 Mac 存裸 CR，混合换行也真实存在
+/// （多人协作的老仓库）。把三种都当换行处理，而不是只认 `\n` 再补剥 `\r`。
 fn split_lines(src : StringView) -> Array[String] {
   let out : Array[String] = []
-  for part in src.split("\n") {
-    out.push(part.to_owned())
-  }
-  out
-}
-
-///|
-/// 去掉行尾的 `\r`（CRLF 文件）
-fn strip_cr(s : String) -> String {
-  let n = s.length()
-  if n > 0 {
-    match s.get_char(n - 1) {
-      Some(c) => if c == '\r' { return chars_sub(s.to_array(), 0, n - 1) }
-      None => ()
+  let n = src.length()
+  let mut cur : Array[Char] = []
+  let mut i = 0
+  while i < n {
+    let c = src.get_char(i).unwrap()
+    if c == '\n' {
+      out.push(String::from_array(cur))
+      cur = []
+      i = i + 1
+    } else if c == '\r' {
+      out.push(String::from_array(cur))
+      cur = []
+      // \r\n 算一个换行
+      if i + 1 < n && src[i + 1] == '\n' {
+        i = i + 2
+      } else {
+        i = i + 1
+      }
+    } else {
+      cur.push(c)
+      i = i + 1
     }
   }
-  s
+  out.push(String::from_array(cur))
+  out
 }
 
 ///|
@@ -368,6 +380,13 @@ fn is_pic_continuation(run : Array[Char]) -> Bool {
 /// 返回的 token 数组**总是**以 `Eof` 结尾（不抛异常时）。
 /// 出错时抛 `ParseError::LexError(line, column, message)`。
 pub fn tokenize(source : StringView) -> Array[Token] raise ParseError {
+  // 剥掉 UTF-8 BOM（U+FEFF）。Windows 上的编辑器/PowerShell 重定向经常
+  // 把它写进文件头，词法层不处理的话整份 copybook 直接报「无法识别的字符」。
+  let source = if source.length() > 0 && source[0] == 0xFEFF {
+    source[1:]
+  } else {
+    source
+  }
   let lines = split_lines(source)
   let fixed = detect_fixed_format(lines)
   let toks : Array[Token] = []
@@ -378,7 +397,7 @@ pub fn tokenize(source : StringView) -> Array[Token] raise ParseError {
 
   for idx, raw in lines {
     let line_no = idx + 1
-    let line = strip_cr(raw)
+    let line = raw
     let cs = line.to_array()
     let len = cs.length()
 
