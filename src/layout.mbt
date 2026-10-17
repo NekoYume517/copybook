@@ -358,6 +358,11 @@ fn compile_field(
     path_prefix + "." + spec.name
   }
   let occurs = if spec.occurs <= 0 { 1 } else { spec.occurs }
+  // FILLER：COBOL 语义是「占字节但不进输出」——必须推进游标、参与布局，
+  // 但不能进入 fields（否则它会出现在解码结果里，且多个 FILLER 会撞同一个
+  // map 键）。把它登记进 all_fields（render_layout 的中间层视图仍可见其占位
+  // 结构）但不进 leaves，组项转发逻辑不受影响。
+  let is_filler = spec.name == "FILLER"
   let span = match spec.pic {
     Some(pic) => {
       // 叶子字段：按 PIC 公式算单元素长度。
@@ -374,10 +379,14 @@ fn compile_field(
         level: spec.level,
         redefine_group: group_id,
       }
-      b.leaves.push(fl)
+      if !is_filler {
+        b.leaves.push(fl)
+      }
       b.all.push(fl)
-      b.by_name[spec.name.to_lower()] = field_base
-      b.by_name[path.to_lower()] = field_base
+      if !is_filler {
+        b.by_name[spec.name.to_lower()] = field_base
+        b.by_name[path.to_lower()] = field_base
+      }
       b.cursor = field_base + total
       total
     }

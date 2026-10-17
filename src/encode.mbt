@@ -32,7 +32,9 @@ priv struct Writer {
 fn Writer::new(size : Int32) -> Writer {
   let buf : Array[Byte] = []
   for i = 0; i < size; i = i + 1 {
-    buf.push(b'\x00')
+    // 初始填充 EBCDIC 空格 0x40：FILLER 等不参与编解码的字节区域
+    // 按 COBOL「未赋值工作存储区 = 空格」的惯例落盘，而不是 0x00。
+    buf.push(b'\x40')
   }
   { buf, }
 }
