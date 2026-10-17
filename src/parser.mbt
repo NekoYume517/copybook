@@ -1043,6 +1043,17 @@ pub fn parse_pic_clause(
     raise SyntaxError(line, column, "PIC '\{text}' 里没有任何数字位 9")
   }
 
+  // COBOL 数字项上限 18 位（总位数 = 整数 + 小数 + 前导 P）。
+  // 超限必须拒绝：zoned/packed 解码会把系数塞进 Int64，19 位起就静默回绕。
+  let total_digits = int_digits + frac_digits + leading_p
+  if total_digits > 18 {
+    raise SyntaxError(
+      line,
+      column,
+      "PIC '\{text}' 共 \{total_digits} 位数字，超过 COBOL 上限 18 位",
+    )
+  }
+
   {
     category: Numeric,
     // digits 只表示**整数位数**（契约），总位数 = digits + scale。

@@ -255,3 +255,16 @@ test "audit: COMP-1/COMP-2 编码接受数值文本（JSONL 路径）" {
     _ => fail("expected Float")
   }
 }
+
+///|
+test "audit: 数字位超过 18 的 PIC 在解析期报错" {
+  let e1 = parse_err("01 R.\n  05 A PIC 9(19).")
+  assert_true(e1.contains("18"))
+  let e2 = parse_err("01 R.\n  05 A PIC S9(9)V9(10).")
+  assert_true(e2.contains("18"))
+  let e3 = parse_err("01 R.\n  05 A PIC 9(19) COMP-3.")
+  assert_true(e3.contains("18"))
+  // 18 位整是合法上界
+  let ok = parse_copybook("01 R.\n  05 A PIC S9(17)V9(1).")
+  assert_eq(ok.length(), 1)
+}
