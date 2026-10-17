@@ -117,6 +117,7 @@ src/
   decode.mbt       记录 → 类型化值
   encode.mbt       类型化值 → 记录
   output.mbt       JSONL / 表格 / 布局报告
+  audit_test.mbt   对抗性审计回归测试
 cmd/copybook/
   main.mbt         CLI
 ```
