@@ -158,3 +158,100 @@ test "audit: 只有 CR 没有换行的 copybook 可解析" {
   assert_eq(roots.length(), 1)
   assert_eq(roots[0].children.length(), 2)
 }
+
+// ============================================================================
+// 4. COMP-1 / COMP-2：README 声称支持 ✅，此前 decode/encode 直接报
+//    "not implemented"。实现为 IEEE 754 大端位模式。
+// ============================================================================
+
+///|
+test "audit: COMP-1 单精度 IEEE 754 大端解码与编码" {
+  let layout = compile_layout(
+    parse_copybook("01 R.\n  05 A PIC S9(4) COMP-1.\n"),
+  )
+  inspect(layout.byte_length, content="4")
+  // 1.5f32 的 binary32 位模式 = 0x3FC00000，大端存放
+  let rec : Bytes = b"\x3F\xC0\x00\x00"
+  let m = decode_record(layout, rec).unwrap()
+  match m.get("R.A") {
+    Some(Float(f)) => {
+      let d = f - 1.5
+      assert_true(d.abs() < 0.0000001)
+    }
+    _ => fail("expected Float")
+  }
+  // 编码回去必须逐字节还原
+  let bytes = encode_record(layout, m).unwrap()
+  assert_eq(bytes[0].to_int(), 0x3F)
+  assert_eq(bytes[1].to_int(), 0xC0)
+  assert_eq(bytes[2].to_int(), 0x00)
+  assert_eq(bytes[3].to_int(), 0x00)
+  // -2.5f32 = 0xC0200000
+  let neg : Bytes = b"\xC0\x20\x00\x00"
+  let m2 = decode_record(layout, neg).unwrap()
+  match m2.get("R.A") {
+    Some(Float(f)) => {
+      let d = f + 2.5
+      assert_true(d.abs() < 0.0000001)
+    }
+    _ => fail("expected Float")
+  }
+}
+
+///|
+test "audit: COMP-2 双精度 IEEE 754 大端解码与编码" {
+  let layout = compile_layout(
+    parse_copybook("01 R.\n  05 A PIC S9(9) COMP-2.\n"),
+  )
+  inspect(layout.byte_length, content="8")
+  // 3.14 的 binary64 位模式大端 = 40 09 1E B8 51 EB 85 1F
+  let rec : Bytes = b"\x40\x09\x1E\xB8\x51\xEB\x85\x1F"
+  let m = decode_record(layout, rec).unwrap()
+  match m.get("R.A") {
+    Some(Float(f)) => {
+      let d = f - 3.14
+      assert_true(d.abs() < 0.000000001)
+    }
+    _ => fail("expected Float")
+  }
+  let bytes = encode_record(layout, m).unwrap()
+  for i = 0; i < 8; i = i + 1 {
+    assert_eq(bytes[i].to_int(), rec[i].to_int())
+  }
+  // 负数：-3.14 = 0xC0091EB851EB851F
+  let neg : Bytes = b"\xC0\x09\x1E\xB8\x51\xEB\x85\x1F"
+  let m2 = decode_record(layout, neg).unwrap()
+  match m2.get("R.A") {
+    Some(Float(f)) => {
+      let d = f + 3.14
+      assert_true(d.abs() < 0.000000001)
+    }
+    _ => fail("expected Float")
+  }
+}
+
+///|
+test "audit: COMP-1/COMP-2 编码接受数值文本（JSONL 路径）" {
+  let layout = compile_layout(
+    parse_copybook("01 R.\n  05 A PIC S9(9) COMP-2.\n"),
+  )
+  let m : Map[String, CellValue] = Map([])
+  m["R.A"] = Text("2.5")
+  let bytes = encode_record(layout, m).unwrap()
+  // 2.5 的 binary64 = 0x4004000000000000
+  let expect : Array[Int32] = [
+    0x40, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+  ]
+  for i = 0; i < 8; i = i + 1 {
+    assert_eq(bytes[i].to_int(), expect[i])
+  }
+  // 解码回来验证值
+  let m2 = decode_record(layout, bytes).unwrap()
+  match m2.get("R.A") {
+    Some(Float(f)) => {
+      let d = f - 2.5
+      assert_true(d.abs() < 0.000000001)
+    }
+    _ => fail("expected Float")
+  }
+}

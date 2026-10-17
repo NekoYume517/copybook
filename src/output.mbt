@@ -26,6 +26,7 @@ fn cell_to_json(v : CellValue) -> Json {
     Int(i) => Json::number(0.0, repr=i.to_string())
     Decimal(d) => Json::number(0.0, repr=d.to_string())
     Bool(b) => Json::boolean(b)
+    Float(f) => Json::number(f, repr=f.to_string())
     Bytes(bs) => {
       let sb = StringBuilder()
       for i = 0; i < bs.length(); i = i + 1 {

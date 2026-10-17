@@ -95,6 +95,8 @@ pub(all) enum CellValue {
   Decimal(Decimal)
   Bool(Bool)
   Bytes(Bytes)
+  /// IEEE 754 浮点（COMP-1 / COMP-2 专用；定点路径不产出它）
+  Float(Double)
 }
 
 ///|
@@ -441,6 +443,35 @@ fn decode_text(
 }
 
 ///|
+/// 解码 IEEE 754 浮点（COMP-1 = 4 字节单精度，COMP-2 = 8 字节双精度），大端。
+fn decode_float_bytes(
+  bytes : BytesView,
+  base_offset : Int32,
+  double_precision : Bool,
+) -> Result[CellValue, DecodeError] {
+  let want = if double_precision { 8 } else { 4 }
+  if bytes.length() != want {
+    return Err(
+      InvalidNumeric(
+        base_offset,
+        "float field must be \{want} bytes, got \{bytes.length()}",
+      ),
+    )
+  }
+  let mut raw : UInt64 = 0UL
+  for i = 0; i < want; i = i + 1 {
+    raw = (raw << 8) | bytes[i].to_int().to_uint64()
+  }
+  if double_precision {
+    Ok(Float(raw.to_int64().reinterpret_as_double()))
+  } else {
+    // 单精度：低 32 位就是 binary32 位模式（raw 只有 4 字节，右移 32 恒为 0）
+    let bits : Int = raw.to_int()
+    Ok(Float(Float::reinterpret_from_int(bits).to_double()))
+  }
+}
+
+///|
 /// 解码单个字段。
 ///
 /// 分派依据是 `pic.category` + `pic.usage`，顺序有讲究：
@@ -524,16 +555,8 @@ fn decode_field(
             Ok(d) => Ok(Decimal(d))
             Err(e) => Err(e)
           }
-        Comp1 =>
-          Err(
-            InvalidNumeric(offset, "COMP-1 (float) decoding is not implemented"),
-          )
-        Comp2 =>
-          Err(
-            InvalidNumeric(
-              offset, "COMP-2 (double) decoding is not implemented",
-            ),
-          )
+        Comp1 => decode_float_bytes(bytes, offset, false)
+        Comp2 => decode_float_bytes(bytes, offset, true)
       }
   }
 }
@@ -679,6 +702,7 @@ pub fn CellValue::to_display(self : CellValue) -> String {
     Text(s) => s
     Int(i) => i.to_string()
     Decimal(d) => d.to_string()
+    Float(f) => f.to_string()
     Bool(b) => if b { "true" } else { "false" }
     Bytes(bs) => {
       let sb = StringBuilder()

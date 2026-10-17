@@ -447,6 +447,7 @@ fn as_text(v : CellValue) -> String {
     Text(s) => s
     Int(i) => i.to_string()
     Decimal(d) => d.to_string()
+    Float(f) => f.to_string()
     Bool(b) => if b { "true" } else { "false" }
     Null => ""
     Bytes(_) => ""
@@ -555,18 +556,73 @@ fn encode_field(
           }
           encode_binary(w, offset, pic, d)
         }
-        Comp1 =>
-          Err(
-            InvalidNumeric(offset, "COMP-1 (float) encoding is not implemented"),
-          )
-        Comp2 =>
-          Err(
-            InvalidNumeric(
-              offset, "COMP-2 (double) encoding is not implemented",
-            ),
-          )
+        Comp1 => encode_float_bytes(w, offset, length, v, false)
+        Comp2 => encode_float_bytes(w, offset, length, v, true)
       }
   }
+}
+
+///|
+/// 编码 IEEE 754 浮点（COMP-1 = 4 字节单精度，COMP-2 = 8 字节双精度），大端。
+///
+/// 接受 `Float` 直接写入，也接受数值文本（便于从 JSONL 往返）。
+/// `width` 是布局层算出的字段字节数，用于越界防御。
+fn encode_float_bytes(
+  w : Writer,
+  offset : Int32,
+  width : Int32,
+  v : CellValue,
+  double_precision : Bool,
+) -> Result[Unit, DecodeError] {
+  let want = if double_precision { 8 } else { 4 }
+  if width != want {
+    return Err(
+      InvalidNumeric(offset, "float field must be \{want} bytes, got \{width}"),
+    )
+  }
+  let d : Double = match v {
+    Float(f) => f
+    Int(i) => i.to_double()
+    Decimal(dd) => dd.coefficient.to_double() / pow10(dd.scale)
+    Text(s) =>
+      try {
+        @string.parse_double(s)
+      } catch {
+        _ =>
+          return Err(
+            InvalidNumeric(offset, "cannot parse '\{s}' as a float"),
+          )
+      } noraise {
+        x => x
+      }
+    Null => 0.0
+    _ =>
+      return Err(
+        InvalidNumeric(offset, "expected a numeric value, got a non-numeric cell"),
+      )
+  }
+  let raw : UInt64 = if double_precision {
+    d.reinterpret_as_uint64()
+  } else {
+    let bits : UInt = d.to_float().reinterpret_as_uint()
+    bits.to_uint64()
+  }
+  for i = 0; i < want; i = i + 1 {
+    let shift = (want - 1 - i) * 8
+    let byte_val = ((raw >> shift) & 0xFFUL).to_int()
+    w.set(offset + i, byte_val)
+  }
+  Ok(())
+}
+
+///|
+/// 10 的 scale 次幂（把 Decimal 语义值换算成 Double 用）
+fn pow10(scale : Int32) -> Double {
+  let mut r : Double = 1.0
+  for i = 0; i < scale; i = i + 1 {
+    r = r * 10.0
+  }
+  r
 }
 
 ///|
