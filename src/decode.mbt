@@ -174,6 +174,9 @@ fn slice_at(record : BytesView, offset : Int32, length : Int32) -> BytesView? {
 /// **符号在最后一字节的高半字节**，这是最容易漏的一条：
 ///   `F1 F2 F3` → +123    `F1 F2 D3` → -123    `F1 F2 C3` → +123
 ///
+/// **SIGN SEPARATE** 时末尾（LEADING 则开头）还有一个独立的 ASCII 符号字节：
+///   EBCDIC '+' = 0x4E，EBCDIC '-' = 0x60。数字部分全是 0xF 区号。
+///
 /// 校验：
 ///   - 所有字节的低半字节必须 ≤ 9
 ///   - 非末字节高半字节必须是 0xF（未符号化）或 0xC/0xD（某些实现重复写符号）
@@ -185,15 +188,52 @@ fn decode_zoned(
   base_offset : Int32,
   signed : Bool,
   scale : Int32,
+  sign_separate : Bool,
+  sign_leading : Bool,
 ) -> Result[Decimal, DecodeError] {
   let n = bytes.length()
   if n == 0 {
     return Err(InvalidNumeric(base_offset, "empty zoned decimal field"))
   }
+  // 独立符号字节：LEADING 在开头，TRAILING 在结尾。
+  let digit_bytes : BytesView = if sign_separate {
+    if sign_leading {
+      bytes[1:n - 1]
+    } else {
+      bytes[:n - 1]
+    }
+  } else {
+    bytes
+  }
+  let mut separate_negative = false
+  if sign_separate {
+    let sb = if sign_leading { bytes[0] } else { bytes[n - 1] }
+    match sb.to_int() {
+      0x4E => separate_negative = false // EBCDIC '+'
+      0x60 => separate_negative = true // EBCDIC '-'
+      other =>
+        return Err(
+          InvalidNumeric(
+            if sign_leading {
+              base_offset
+            } else {
+              base_offset + n - 1
+            },
+            "separate sign byte is 0x\{hex2(other)}, expected 0x4E (+) or 0x60 (-)",
+          ),
+        )
+    }
+  }
+  let dn = digit_bytes.length()
+  if dn == 0 {
+    return Err(
+      InvalidNumeric(base_offset, "empty zoned decimal digits (sign only)"),
+    )
+  }
   let mut coef : Int64 = 0
-  let mut negative = false
-  for i = 0; i < n; i = i + 1 {
-    let b = bytes[i].to_int()
+  let mut embedded_negative = false
+  for i = 0; i < dn; i = i + 1 {
+    let b = digit_bytes[i].to_int()
     let lo = b & 0xF
     let hi = (b >> 4) & 0xF
     if lo > 9 {
@@ -205,11 +245,11 @@ fn decode_zoned(
       )
     }
     // 末字节的高半字节是符号
-    if i == n - 1 {
+    if i == dn - 1 {
       match hi {
         // 0xC / 0xF 正，0xD 负
-        0xC | 0xF => negative = false
-        0xD => negative = true
+        0xC | 0xF => embedded_negative = false
+        0xD => embedded_negative = true
         _ =>
           return Err(
             InvalidNumeric(
@@ -229,11 +269,12 @@ fn decode_zoned(
     coef = coef * 10L + lo.to_int64()
   }
   // 无符号字段不接受负号 —— 存储说"我不带符号"，出现 0xD 就是数据错了。
+  let negative = if sign_separate { separate_negative } else { embedded_negative }
   if !signed && negative {
     return Err(
       InvalidNumeric(
         base_offset + n - 1,
-        "unsigned zoned decimal has negative sign (byte 0x\{hex2(bytes[n - 1].to_int())})",
+        "unsigned zoned decimal has negative sign (byte 0x\{hex2(digit_bytes[dn - 1].to_int())})",
       ),
     )
   }
@@ -452,7 +493,14 @@ fn decode_field(
     Numeric =>
       match pic.usage {
         Display => {
-          let r = decode_zoned(bytes, offset, pic.signed, pic.scale)
+          let r = decode_zoned(
+            bytes,
+            offset,
+            pic.signed,
+            pic.scale,
+            pic.sign_separate,
+            pic.sign_leading,
+          )
           match r {
             Ok(d) =>
               // scale == 0 时用 Int 表示整数，避免下游把整数当小数处理

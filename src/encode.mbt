@@ -85,6 +85,9 @@ fn pad_digits(digits : String, width : Int32) -> String? {
 /// 布局：每位一个字节，`0xF0 | digit`；末字节高半字节换成正/负号。
 ///   123  → `F1 F2 F3`
 ///   -123 → `F1 F2 D3`
+///
+/// **SIGN SEPARATE** 时另有一个独立符号字节（EBCDIC '+' = 0x4E，'-' = 0x60），
+/// TRAILING（默认）在数字之后，LEADING 在数字之前。
 fn encode_zoned(
   w : Writer,
   offset : Int32,
@@ -104,10 +107,25 @@ fn encode_zoned(
       )
   }
   let sign_nibble = if d.negative { 0xD } else { 0xF }
-  for i = 0; i < width; i = i + 1 {
-    let digit = padded[i].to_int() - '0'.to_int()
-    let zone = if i == width - 1 { sign_nibble } else { 0xF }
-    w.set(offset + i, (zone << 4) | digit)
+  if pic.sign_separate {
+    let sign_byte = if d.negative { 0x60 } else { 0x4E }
+    let digit_start = if pic.sign_leading { 1 } else { 0 }
+    for i = 0; i < width; i = i + 1 {
+      let digit = padded[i].to_int() - '0'.to_int()
+      w.set(offset + digit_start + i, 0xF0 | digit)
+    }
+    // 独立符号字节：LEADING 在前，TRAILING 在后
+    if pic.sign_leading {
+      w.set(offset, sign_byte)
+    } else {
+      w.set(offset + width, sign_byte)
+    }
+  } else {
+    for i = 0; i < width; i = i + 1 {
+      let digit = padded[i].to_int() - '0'.to_int()
+      let zone = if i == width - 1 { sign_nibble } else { 0xF }
+      w.set(offset + i, (zone << 4) | digit)
+    }
   }
   Ok(())
 }

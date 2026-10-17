@@ -25,6 +25,7 @@ fn one_numeric(
     signed,
     usage,
     sign_separate: false,
+    sign_leading: false,
     pic_text: "",
   }
   let spec : FieldSpec = {
@@ -65,6 +66,7 @@ fn one_text(n : Int32) -> RecordLayout raise ParseError {
     signed: false,
     usage: Display,
     sign_separate: false,
+    sign_leading: false,
     pic_text: "",
   }
   let spec : FieldSpec = {

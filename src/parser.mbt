@@ -114,6 +114,7 @@ pub(all) struct PicClause {
   signed : Bool
   usage : Usage
   sign_separate : Bool
+  sign_leading : Bool // SIGN SEPARATE 的位置：true = LEADING（符号字节在前），false = TRAILING
   pic_text : String // PIC 模式串原文（大写），供布局层兜底
 }
 
@@ -472,6 +473,8 @@ fn parse_entry_clauses(
   // 显式写的 USAGE；None 表示没写（由 PIC 子句自带或默认 Display）
   let mut explicit_usage : Usage? = None
   let mut sign_separate = false
+  // SIGN SEPARATE 的位置；默认 TRAILING（COBOL 默认对带符号数值是 TRAILING）
+  let mut sign_leading = false
 
   while !p.at_eof() && !p.at_dot() {
     let tok = p.peek()
@@ -520,8 +523,12 @@ fn parse_entry_clauses(
     if p.at_keyword("SIGN") {
       let _ = p.advance()
       let _ = p.eat_keyword("IS")
-      let _ = p.eat_keyword("LEADING")
-      let _ = p.eat_keyword("TRAILING")
+      if p.eat_keyword("LEADING") {
+        sign_leading = true
+      } else {
+        let _ = p.eat_keyword("TRAILING")
+        sign_leading = false
+      }
       if p.eat_keyword("SEPARATE") {
         sign_separate = true
       }
@@ -650,6 +657,7 @@ fn parse_entry_clauses(
         signed: pc.signed || sign_separate,
         usage: u,
         sign_separate,
+        sign_leading,
         pic_text: pc.pic_text,
       })
     }
@@ -983,6 +991,7 @@ pub fn parse_pic_clause(
       signed: false,
       usage: Display,
       sign_separate: false,
+      sign_leading: false,
       pic_text: text,
     }
   }
@@ -1044,6 +1053,7 @@ pub fn parse_pic_clause(
     signed,
     usage: Display,
     sign_separate: false,
+    sign_leading: false,
     pic_text: text,
   }
 }
@@ -1125,6 +1135,7 @@ fn parse_edited(
     signed,
     usage: Display,
     sign_separate: false,
+    sign_leading: false,
     pic_text: text,
   }
 }

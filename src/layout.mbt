@@ -172,6 +172,7 @@ fn group_pic(byte_length : Int32) -> PicClause {
     signed: false,
     usage: Display,
     sign_separate: false,
+    sign_leading: false,
     pic_text: sb.to_string(),
   }
 }
