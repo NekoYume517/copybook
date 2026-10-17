@@ -17,6 +17,3 @@ description = "COBOL copybook compiler: fixed-length EBCDIC/COMP-3 record decodi
 import {
   "moonbitlang/x@0.5.5",
 }
-
-
-

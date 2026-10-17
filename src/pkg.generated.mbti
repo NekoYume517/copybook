@@ -1,5 +1,5 @@
 // Generated using `moon info`, DON'T EDIT IT
-package "moonbit-hack/copybook/src"
+package "NekoYume517/copybook/src"
 
 import {
   "moonbitlang/core/debug",
@@ -103,6 +103,7 @@ pub(all) enum CellValue {
   Decimal(Decimal)
   Bool(Bool)
   Bytes(Bytes)
+  Float(Double)
 }
 pub fn CellValue::to_display(Self) -> String
 
@@ -163,6 +164,7 @@ pub(all) struct PicClause {
   signed : Bool
   usage : Usage
   sign_separate : Bool
+  sign_leading : Bool
   pic_text : String
 }
 

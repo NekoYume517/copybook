@@ -271,7 +271,11 @@ fn decode_zoned(
     coef = coef * 10L + lo.to_int64()
   }
   // 无符号字段不接受负号 —— 存储说"我不带符号"，出现 0xD 就是数据错了。
-  let negative = if sign_separate { separate_negative } else { embedded_negative }
+  let negative = if sign_separate {
+    separate_negative
+  } else {
+    embedded_negative
+  }
   if !signed && negative {
     return Err(
       InvalidNumeric(
@@ -466,7 +470,7 @@ fn decode_float_bytes(
     Ok(Float(raw.to_int64().reinterpret_as_double()))
   } else {
     // 单精度：低 32 位就是 binary32 位模式（raw 只有 4 字节，右移 32 恒为 0）
-    let bits : Int = raw.to_int()
+    let bits : Int32 = raw.to_int()
     Ok(Float(Float::reinterpret_from_int(bits).to_double()))
   }
 }

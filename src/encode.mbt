@@ -588,26 +588,24 @@ fn encode_float_bytes(
     Int(i) => i.to_double()
     Decimal(dd) => dd.coefficient.to_double() / pow10(dd.scale)
     Text(s) =>
-      try {
-        @string.parse_double(s)
-      } catch {
+      try @string.parse_double(s) catch {
         _ =>
-          return Err(
-            InvalidNumeric(offset, "cannot parse '\{s}' as a float"),
-          )
+          return Err(InvalidNumeric(offset, "cannot parse '\{s}' as a float"))
       } noraise {
         x => x
       }
     Null => 0.0
     _ =>
       return Err(
-        InvalidNumeric(offset, "expected a numeric value, got a non-numeric cell"),
+        InvalidNumeric(
+          offset, "expected a numeric value, got a non-numeric cell",
+        ),
       )
   }
   let raw : UInt64 = if double_precision {
     d.reinterpret_as_uint64()
   } else {
-    let bits : UInt = d.to_float().reinterpret_as_uint()
+    let bits : UInt32 = d.to_float().reinterpret_as_uint()
     bits.to_uint64()
   }
   for i = 0; i < want; i = i + 1 {

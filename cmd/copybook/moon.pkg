@@ -6,4 +6,3 @@ import {
 }
 
 pkgtype(kind: "executable")
-

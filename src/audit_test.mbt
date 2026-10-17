@@ -239,9 +239,7 @@ test "audit: COMP-1/COMP-2 编码接受数值文本（JSONL 路径）" {
   m["R.A"] = Text("2.5")
   let bytes = encode_record(layout, m).unwrap()
   // 2.5 的 binary64 = 0x4004000000000000
-  let expect : Array[Int32] = [
-    0x40, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  ]
+  let expect : Array[Int32] = [0x40, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
   for i = 0; i < 8; i = i + 1 {
     assert_eq(bytes[i].to_int(), expect[i])
   }
@@ -268,8 +266,12 @@ test "audit: 数字位超过 18 的 PIC 在解析期报错" {
   let ok = parse_copybook("01 R.\n  05 A PIC S9(17)V9(1).")
   assert_eq(ok.length(), 1)
 }
+
+///|
 test "audit: 无符号 COMP-3 的 -0 编码后必须仍可解码" {
-  let layout = compile_layout(parse_copybook("01 R.\n  05 A PIC 9(3) COMP-3.\n"))
+  let layout = compile_layout(
+    parse_copybook("01 R.\n  05 A PIC 9(3) COMP-3.\n"),
+  )
   let m : Map[String, CellValue] = Map([])
   m["R.A"] = Decimal(Decimal::from_parts(0L, 0, true))
   let bytes = encode_record(layout, m).unwrap()
@@ -277,9 +279,7 @@ test "audit: 无符号 COMP-3 的 -0 编码后必须仍可解码" {
   match decode_record_ordered(layout, bytes) {
     Ok(v) =>
       match v[0] {
-        Decimal(d) => {
-          assert_true(d.coefficient == 0L)
-        }
+        Decimal(d) => assert_true(d.coefficient == 0L)
         _ => fail("expected Decimal")
       }
     Err(e) => fail(e.to_display())
