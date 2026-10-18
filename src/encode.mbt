@@ -851,7 +851,9 @@ pub fn roundtrip_check(
     }
   }
   if reencoded.length() != n {
-    return Ok(Some(if n < reencoded.length() { n } else { n }))
+    // 两分支原写成相同表达式（审查发现的死分支）：无论谁长，第一个
+    // 不一致的位置都是 n（两者公共前缀已逐字节比对过且无差异）。
+    return Ok(Some(n))
   }
   Ok(None)
 }
