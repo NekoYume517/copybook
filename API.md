@@ -81,11 +81,14 @@ pub(all) enum Usage {
 
 pub(all) struct PicClause {
   category : PicCategory
-  digits : Int           // 9(7) -> 7，X(30) -> 30
-  scale : Int            // V99 -> 2；无 V 则为 0
+  digits : Int           // 9(7) -> 7（整数位数），X(30) -> 30
+  scale : Int            // V99 -> 2；无 V 则为 0；尾随 P 为负（如 9(3)PP -> -2）
+  storage_digits : Int   // 实际占存储的数字位数（P 不占存储）
   signed : Bool          // S 前缀
   usage : Usage
   sign_separate : Bool   // SIGN IS ... SEPARATE
+  sign_leading : Bool    // SIGN SEPARATE 的位置：true = LEADING
+  pic_text : String      // PIC 模式串原文（大写）
 }
 
 pub(all) struct FieldSpec {
@@ -93,11 +96,13 @@ pub(all) struct FieldSpec {
   name : String
   pic : PicClause?
   redefines : String?
-  occurs : Int           // 默认 1
+  occurs : Int           // 默认 1；OCCURS 1 TO 5 取上界 5
+  occurs_min : Int       // OCCURS 1 TO 5 取下界 1；无 TO 时等于 occurs
   occurs_depending_on : String?
   value_literal : String?
   children : Array[FieldSpec]
   line : Int
+  group_usage : Usage?   // 组项上写的 USAGE，供子项继承
 }
 
 pub fn parse_copybook(source : StringView) -> Array[FieldSpec] raise ParseError
@@ -139,6 +144,10 @@ pub fn compile_layout(specs : Array[FieldSpec]) -> RecordLayout raise ParseError
 
 /// 按名字查字段（大小写不敏感，支持点分路径）
 pub fn RecordLayout::find(self : RecordLayout, name : StringView) -> FieldLayout?
+
+/// 可解码叶子的偏移区间并集字节数（测试与 verify 自检用；REDEFINES
+/// 会重复计数共享字节，故按并集而不是逐字段求和）
+pub fn RecordLayout::covered_bytes(self : RecordLayout) -> Int
 ```
 
 字节数计算规则（**必须精确，这是全项目最容易错的地方**）：
@@ -201,6 +210,7 @@ pub(all) enum CellValue {
   Decimal(Decimal)      // 定点小数，见下
   Bool(Bool)
   Bytes(Bytes)
+  Float(Double)         // IEEE 754 浮点（COMP-1 / COMP-2 专用）
 }
 
 pub(all) struct Decimal {
@@ -217,7 +227,7 @@ pub(all) enum DecodeError {
   InvalidNumeric(offset : Int, detail : String)
   InvalidEbcdic(offset : Int, byte : Int)
   FieldOutOfBounds(field : String, offset : Int, length : Int)
-} derive(Eq, Debug)
+} derive(Debug)
 
 /// 解码一条记录为 Map[字段路径, 值]
 pub fn decode_record(layout : RecordLayout, record : BytesView) -> Result[Map[String, CellValue], DecodeError]
@@ -227,13 +237,21 @@ pub fn decode_record_ordered(layout : RecordLayout, record : BytesView) -> Resul
 
 /// 批量解码
 pub fn decode_records(layout : RecordLayout, data : BytesView, record_length : Int) -> Result[Array[Map[String, CellValue]], DecodeError]
+
+/// 严格版 decode_record：任何视图（含 REDEFINES 重定义视图）
+/// 解码失败都报错；供 verify 与单元测试使用
+pub fn decode_record_strict(layout : RecordLayout, record : BytesView) -> Result[Map[String, CellValue], DecodeError]
 ```
 
 规则：
 - zoned decimal：每个字节低 4 位是数字；**最后一个字节的高 4 位是符号**（`0xC`/`0xF` 正，`0xD` 负）。
 - packed decimal（COMP-3）：每字节两半字节；最后一字节低 4 位是符号。
 - COMP 二进制：按字节数用**大端**读取，有符号用补码。
+- COMP-1 / COMP-2：IEEE 754 浮点，4 / 8 字节大端；解码为 `CellValue::Float`。
 - 文本字段：EBCDIC 解码后 `trim_end` 空格（0x40）。
+- P 缩放位（`PIC PP9(3)` / `PIC 9(3)PP`）不占存储：存储宽度按
+  `storage_digits`；数值语义折算进 `scale`（前导 P 增大 scale，
+  尾随 P 使 scale 为负）。值 = coefficient × 10^(-scale)。
 - **绝不静默修正非法数据**，返回 `DecodeError`。
 
 ## 5. 编码（往返）`src/encode.mbt`
@@ -257,6 +275,12 @@ pub fn render_table(layout : RecordLayout, rows : Array[Map[String, CellValue]])
 /// 布局报告：字段名 / 偏移 / 长度 / 类型
 pub fn render_layout(layout : RecordLayout) -> String
 ```
+
+`render_jsonl` 的数值表示：`Int` / `Decimal` / 有限 `Float` 输出 JSON
+number（带十进制 repr 原文）。**COMP-1 / COMP-2 的 ±Inf / NaN 不是合法
+JSON 字面量**，按 IEEE 754 文本约定输出带引号字符串 `"Infinity"` /
+`"-Infinity"` / `"NaN"`；`parse_jsonl_row` 能把这三个串解回
+`CellValue::Float`。
 
 `render_layout` 示例输出（**必须长这样，数字是权威答案**）：
 
