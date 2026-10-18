@@ -465,6 +465,39 @@ test "R3: COMP-1/2 的 Inf/NaN 输出合法 JSON 并可回读" {
   }
 }
 
+///|
+test "R5: 子项显式 USAGE 优先于组级 USAGE 继承" {
+  // COBOL 标准：子项显式声明 USAGE 优先，组级 USAGE 只补缺省。
+  // 05 G USAGE COMP-3. 10 A PIC 9(3) USAGE DISPLAY. → A 是 zoned 3 字节，
+  // 不是 COMP-3 2 字节。
+  let layout = compile_layout(
+    parse_copybook(
+      "01 R.\n  05 G USAGE COMP-3.\n    10 A PIC 9(3) USAGE DISPLAY.\n",
+    ),
+  )
+  inspect(layout.byte_length, content="3")
+  match layout.fields[0] {
+    f => inspect(f.pic.usage.name(), content="DISPLAY")
+  }
+  // 裸写 COMP 族也算显式声明
+  let layout2 = compile_layout(
+    parse_copybook(
+      "01 R2.\n  05 G COMP-3.\n    10 A PIC 9(3) COMP.\n",
+    ),
+  )
+  match layout2.fields[0] {
+    f => inspect(f.pic.usage.name(), content="COMP")
+  }
+  // 对照组：子项未声明仍正常继承（既有 C5 行为不回归）
+  let layout3 = compile_layout(
+    parse_copybook("01 R3.\n  05 G USAGE COMP-3.\n    10 X PIC 9(3).\n"),
+  )
+  inspect(layout3.byte_length, content="2")
+  match layout3.fields[0] {
+    f => inspect(f.pic.usage.name(), content="COMP-3")
+  }
+}
+
 // ============================================================
 // 辅助
 // ============================================================

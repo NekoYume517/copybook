@@ -172,6 +172,11 @@ priv struct RawEntry {
   occurs_depending_on : String?
   value_literal : String?
   group_usage : Usage?
+  // 本项**显式**声明的 USAGE（USAGE 子句或裸 COMP 族）。
+  // 与 pic.usage 的区别：PIC 子句默认自带 Display，无法区分「写了
+  // DISPLAY」与「默认 Display」——COBOL 标准规定子项显式声明优先于
+  // 组级 USAGE，必须靠这个标志判别（R6）。
+  explicit_usage : Usage?
 }
 
 ///|
@@ -389,6 +394,7 @@ fn parse_program(p : ParserState) -> Array[FieldSpec] raise ParseError {
       occurs_depending_on: entry.occurs_depending_on,
       value_literal: entry.value_literal,
       group_usage: entry.group_usage,
+      explicit_usage: entry.explicit_usage,
     })
   }
 
@@ -438,7 +444,14 @@ fn build_children(
   while i < flat.length() && flat[i].level > parent_level {
     let e = flat[i]
     i = i + 1
-    // 本节点的有效组级 USAGE：自身声明的优先，否则继承上层
+    // USAGE 继承（R6）分两件事：
+    //   1. **下传给子项**（组项的角色）：组项自身显式声明的 USAGE
+    //      （group_usage）仍是最优先的继承来源，其次上层继承 —— 这条
+    //      不能因为「本项自己显式声明了」而失效。
+    //   2. **落到本项**（基本项的角色）：仅当本项**未显式声明** USAGE
+    //      时才接受 down 覆盖 pic.usage；显式声明（USAGE 子句或裸
+    //      COMP 族）按 COBOL 标准优先，parse_entry_clauses 已合并进
+    //      pic.usage，这里不再改写。
     let down : Usage? = match e.group_usage {
       Some(u) => Some(u)
       None => inherited_usage
@@ -457,18 +470,23 @@ fn build_children(
         None => ()
       }
     }
-    // 组级 USAGE 落到基本项：仅有 PIC 且继承到的 usage 与自身不同时改写。
-    // Usage 没有 Eq，按构造子比较（enum 无参数变体，结构相等即可）。
+    // 组级 USAGE 落到基本项：仅有 PIC、**未显式声明 USAGE**、且继承到的
+    // usage 与自身不同时改写。显式声明过的一律保留 parse_entry_clauses
+    // 合并后的结果（那里已把 explicit_usage 覆盖进 pic.usage）。
     let final_pic : PicClause? = match e.pic {
       Some(pc) =>
-        match down {
-          Some(u) =>
-            if usage_same(pc.usage, u) {
-              Some(pc)
-            } else {
-              Some({ ..pc, usage: u, })
-            }
-          None => Some(pc)
+        if e.explicit_usage is Some(_) {
+          Some(pc)
+        } else {
+          match down {
+            Some(u) =>
+              if usage_same(pc.usage, u) {
+                Some(pc)
+              } else {
+                Some({ ..pc, usage: u, })
+              }
+            None => Some(pc)
+          }
         }
       None => None
     }
@@ -503,6 +521,7 @@ priv struct EntryClauses {
   occurs_depending_on : String?
   value_literal : String?
   group_usage : Usage?
+  explicit_usage : Usage?
 }
 
 ///|
@@ -726,6 +745,7 @@ fn parse_entry_clauses(
     occurs_depending_on,
     value_literal,
     group_usage,
+    explicit_usage,
   }
 }
 
