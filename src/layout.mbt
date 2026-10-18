@@ -478,6 +478,14 @@ fn compile_field(
       // 路径加 `(i)` 后缀（1 起始），occurs 归 1（下游不再需要展开）。
       // FieldLayout 是不可变值，但 Builder.leaves 是可变数组，可以
       // 在编译期整体替换。
+      //
+      // **下标序列**（R2）：嵌套 OCCURS 摊平必须把外层下标也带上。
+      // 递归期间组内叶子已经携带了**内层**已拼好的下标后缀
+      // （`...X(1)`、`...X(2)`，由更深的组写入），本层展开时要把
+      // 本层下标拼在**最前**：leaf 的新后缀 = "(i)" + leaf 原后缀。
+      // 展开顺序 = 存储顺序（外层先行、内层跟随），所以 offset 为
+      // base + rel + (k-1)*inner。唯一权威实现收敛在布局层这里，
+      // decode/render/encode 拿到的键名自动一致。
       let leaf_mark = b.leaves.length()
       let all_mark = b.all.length()
       for child in spec.children {
@@ -500,6 +508,9 @@ fn compile_field(
           }
           // 该叶子在单元素组内的相对偏移
           let rel = leaf.offset - field_base
+          // 剥出叶子既有的下标后缀（内层摊平写入的 "(j)(k)..."），
+          // 本层下标插在最前：X(j) 展开为 X(k)(j) —— 外层→内层顺序。
+          let (base_path, inner_suffix) = split_index_suffix(leaf.path)
           // 先移除原条目，再按出现序插入展开副本
           let _removed = b.leaves.remove(i)
           let mut k = 1
@@ -507,7 +518,7 @@ fn compile_field(
             let expanded : FieldLayout = {
               ..leaf,
               offset: field_base + rel + (k - 1) * inner,
-              path: "\{leaf.path}(\{k})",
+              path: "\{base_path}(\{k})\{inner_suffix}",
               occurs: 1,
               total_length: leaf.byte_length,
             }
@@ -635,6 +646,71 @@ pub fn RecordLayout::find(
     }
   }
   None
+}
+
+///|
+/// 把路径尾部的 `(n)(m)...` 下标序列从名字里剥出来。
+///
+/// 返回 `(去掉下标后缀的主体, 原样的下标后缀)`。
+/// `R.G1.G2.X(1)` → `("R.G1.G2.X", "(1)")`；`R.A` → `("R.A", "")`。
+///
+/// COBOL 字段名不可能含 `(`（词法层拒绝），所以路径里出现的所有
+/// `(...)` 都来自摊平展开，从最后一个字符向前扫到第一个 `(` 即可。
+/// COBOL 名也不能含 `.`，主体里不会再有歧义。
+fn split_index_suffix(path : String) -> (String, String) {
+  let cs = path.to_array()
+  // 从尾向前：最后一段必须是 `(...)` 才算下标后缀
+  if cs.length() == 0 || cs[cs.length() - 1] != ')' {
+    return (path, "")
+  }
+  // 找与之配对的 `(`：后缀里不会再有嵌套括号（下标是纯数字）
+  let mut j = cs.length() - 1
+  let mut depth = 0
+  let mut open = -1
+  while j >= 0 {
+    let c = cs[j]
+    if c == ')' {
+      depth = depth + 1
+    } else if c == '(' {
+      depth = depth - 1
+      if depth == 0 {
+        open = j
+        break
+      }
+    }
+    j = j - 1
+  }
+  if open < 0 {
+    return (path, "")
+  }
+  // 继续向前：如果 `(` 之前紧跟 `)`，说明还有更多层下标（嵌套 OCCURS）
+  let mut end = open
+  while end > 0 && cs[end - 1] == ')' {
+    // 向前找这一层的 `(`
+    let mut d2 = 0
+    let mut o2 = -1
+    let mut k = end - 1
+    while k >= 0 {
+      let c = cs[k]
+      if c == ')' {
+        d2 = d2 + 1
+      } else if c == '(' {
+        d2 = d2 - 1
+        if d2 == 0 {
+          o2 = k
+          break
+        }
+      }
+      k = k - 1
+    }
+    if o2 < 0 {
+      break
+    }
+    end = o2
+  }
+  let suffix = String::from_array(cs[end:cs.length()])
+  let base = String::from_array(cs[:end])
+  (base, suffix)
 }
 
 ///|

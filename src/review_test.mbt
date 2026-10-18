@@ -323,6 +323,89 @@ test "R1b: 前导 P 计入 scale，值语义 123 → 0.00123" {
   }
 }
 
+///|
+test "R2: 嵌套 OCCURS 键名下标按外层→内层顺序" {
+  // G1 OCCURS 2 { G2 OCCURS 2 { X } }：4 个元素的下标语义是
+  // X(i)(j) = G1 第 i 次、G2 第 j 次。存储顺序按行展开：
+  //   offset 0: G1=1,G2=1 → 11
+  //   offset 2: G1=1,G2=2 → 12
+  //   offset 4: G1=2,G2=1 → 21
+  //   offset 6: G1=2,G2=2 → 22
+  let layout = compile_layout(
+    parse_copybook(
+      "01 R.\n  05 G1 OCCURS 2 TIMES.\n    10 G2 OCCURS 2 TIMES.\n      20 X PIC 9(2).\n",
+    ),
+  )
+  inspect(layout.byte_length, content="8")
+  let rec : Bytes =
+    b"\xF1\xF1\xF1\xF2\xF2\xF1\xF2\xF2"
+  match decode_record(layout, rec) {
+    Ok(m) => {
+      match m.get("R.G1.G2.X(1)(1)") {
+        Some(Int(v)) => inspect(v, content="11")
+        other => {
+          println("X(1)(1) wrong: not Int")
+          inspect(false, content="true")
+        }
+      }
+      match m.get("R.G1.G2.X(1)(2)") {
+        Some(Int(v)) => inspect(v, content="12")
+        other => {
+          println("X(1)(2) wrong: not Int")
+          inspect(false, content="true")
+        }
+      }
+      match m.get("R.G1.G2.X(2)(1)") {
+        Some(Int(v)) => inspect(v, content="21")
+        other => {
+          println("X(2)(1) wrong: not Int")
+          inspect(false, content="true")
+        }
+      }
+      match m.get("R.G1.G2.X(2)(2)") {
+        Some(Int(v)) => inspect(v, content="22")
+        other => {
+          println("X(2)(2) wrong: not Int")
+          inspect(false, content="true")
+        }
+      }
+    }
+    Err(e) => {
+      println("decode failed: \{e.to_display()}")
+      inspect(false, content="true")
+    }
+  }
+  // 编码端按同样键名写回，逐字节还原
+  let m2 : Map[String, CellValue] = Map([])
+  m2["R.G1.G2.X(1)(1)"] = Int(11L)
+  m2["R.G1.G2.X(1)(2)"] = Int(12L)
+  m2["R.G1.G2.X(2)(1)"] = Int(21L)
+  m2["R.G1.G2.X(2)(2)"] = Int(22L)
+  match roundtrip_check(layout, rec) {
+    Ok(None) => inspect(true, content="true")
+    Ok(Some(off)) => {
+      println("byte mismatch at \{off}")
+      inspect(false, content="true")
+    }
+    Err(e) => {
+      println("roundtrip error: \{e.to_display()}")
+      inspect(false, content="true")
+    }
+  }
+  // 编码下标键 → 字节位置：X(2)(1)（G1=2,G2=1）必须写在 offset 4
+  match encode_record(layout, m2) {
+    Ok(b) => {
+      inspect(b.length(), content="8")
+      inspect(b[4].to_int(), content="242") // F2
+      inspect(b[5].to_int(), content="241") // F1
+    }
+    Err(e) => {
+      println("encode failed: \{e.to_display()}")
+      inspect(false, content="true")
+    }
+  }
+}
+
 // ============================================================
 // 辅助
 // ============================================================
