@@ -337,8 +337,7 @@ test "R2: 嵌套 OCCURS 键名下标按外层→内层顺序" {
     ),
   )
   inspect(layout.byte_length, content="8")
-  let rec : Bytes =
-    b"\xF1\xF1\xF1\xF2\xF2\xF1\xF2\xF2"
+  let rec : Bytes = b"\xF1\xF1\xF1\xF2\xF2\xF1\xF2\xF2"
   match decode_record(layout, rec) {
     Ok(m) => {
       match m.get("R.G1.G2.X(1)(1)") {
@@ -409,7 +408,9 @@ test "R2: 嵌套 OCCURS 键名下标按外层→内层顺序" {
 ///|
 test "R3: COMP-1/2 的 Inf/NaN 输出合法 JSON 并可回读" {
   let layout = compile_layout(
-    parse_copybook("01 R.\n  05 F1 PIC 9 USAGE COMP-1.\n  05 F2 PIC 9 USAGE COMP-2.\n"),
+    parse_copybook(
+      "01 R.\n  05 F1 PIC 9 USAGE COMP-1.\n  05 F2 PIC 9 USAGE COMP-2.\n",
+    ),
   )
   // 构造 +Inf / -Inf / NaN 行
   let pos_inf = 1.0 / 0.0
@@ -435,10 +436,9 @@ test "R3: COMP-1/2 的 Inf/NaN 输出合法 JSON 并可回读" {
   match parse_jsonl_row(layout, lines[0].to_owned()) {
     Ok(m) =>
       match m.get("R.F1") {
-        Some(Float(f)) => {
+        Some(Float(f)) =>
           // +Inf == +Inf 成立；用相等而不是减法（Inf-Inf = NaN）
           inspect(f == pos_inf, content="true")
-        }
         other => {
           println("F1 expected Float(Inf)")
           inspect(false, content="true")
@@ -481,9 +481,7 @@ test "R5: 子项显式 USAGE 优先于组级 USAGE 继承" {
   }
   // 裸写 COMP 族也算显式声明
   let layout2 = compile_layout(
-    parse_copybook(
-      "01 R2.\n  05 G COMP-3.\n    10 A PIC 9(3) COMP.\n",
-    ),
+    parse_copybook("01 R2.\n  05 G COMP-3.\n    10 A PIC 9(3) COMP.\n"),
   )
   match layout2.fields[0] {
     f => inspect(f.pic.usage.name(), content="COMP")
@@ -541,7 +539,9 @@ test "R7: 词法层超长数字报 LexError 而不是静默回绕" {
   } catch {
     e => e.to_display()
   }
-  let ok = err.contains("超出") || err.contains("溢出") || err.contains("too")
+  let ok = err.contains("超出") ||
+    err.contains("溢出") ||
+    err.contains("too")
   if !ok {
     println("actual: \{err}")
   }

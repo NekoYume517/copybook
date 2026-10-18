@@ -602,7 +602,11 @@ pub fn tokenize(source : StringView) -> Array[Token] raise ParseError {
 fn parse_digits(text : String) -> Int32 raise ParseError {
   let cs = text.to_array()
   if cs.length() == 0 || cs.length() > 9 {
-    raise LexError(0, 0, "数字 '\{text}' 超出 Int32 范围（最多 9 位）")
+    raise LexError(
+      0,
+      0,
+      "数字 '\{text}' 超出 Int32 范围（最多 9 位）",
+    )
   }
   let mut n = 0
   let mut i = 0

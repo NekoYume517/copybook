@@ -245,10 +245,7 @@ fn encode_binary(
   }
   if width == 0 {
     return Err(
-      InvalidNumeric(
-        offset,
-        "COMP supports at most 18 digits, got \{total}",
-      ),
+      InvalidNumeric(offset, "COMP supports at most 18 digits, got \{total}"),
     )
   }
   // 容量检查：n 字节有符号能表示 -2^(8n-1) .. 2^(8n-1)-1。

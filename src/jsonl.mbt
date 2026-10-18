@@ -32,7 +32,7 @@ pub fn parse_jsonl_row(
         }
         match raw {
           None => ()
-          Some(Json::String(s)) => {
+          Some(Json::String(s)) =>
             // 非有限浮点的字符串表示（IEEE 754 文本约定）优先于 Text
             if s == "Infinity" {
               out[field.path] = Float(1.0 / 0.0)
@@ -43,7 +43,6 @@ pub fn parse_jsonl_row(
             } else {
               out[field.path] = Text(s)
             }
-          }
           Some(Json::Number(d, repr~)) => {
             let text = match repr {
               Some(r) => r
