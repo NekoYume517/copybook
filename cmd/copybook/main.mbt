@@ -252,6 +252,10 @@ fn cmd_layout(opts : Options) -> Int32 {
       return EXIT_DATA
     }
   }
+  if layout.byte_length == 0 {
+    eprintln("copybook has zero record length (no fields)")
+    return EXIT_DATA
+  }
   println(@lib.render_layout(layout))
   EXIT_OK
 }
@@ -288,6 +292,10 @@ fn cmd_decode(opts : Options) -> Int32 {
       eprintln(msg)
       return EXIT_DATA
     }
+  }
+  if layout.byte_length == 0 {
+    eprintln("copybook has zero record length (no fields)")
+    return EXIT_DATA
   }
   let data = match read_binary_file(data_path) {
     Some(b) => b
@@ -361,6 +369,10 @@ fn cmd_encode(opts : Options) -> Int32 {
       return EXIT_DATA
     }
   }
+  if layout.byte_length == 0 {
+    eprintln("copybook has zero record length (no fields)")
+    return EXIT_DATA
+  }
   let text = match read_text_file(json_path) {
     Some(t) => t
     None => {
@@ -430,6 +442,10 @@ fn cmd_verify(opts : Options) -> Int32 {
       return EXIT_DATA
     }
   }
+  if layout.byte_length == 0 {
+    eprintln("copybook has zero record length (no fields)")
+    return EXIT_DATA
+  }
   let data = match read_binary_file(data_path) {
     Some(b) => b
     None => {
@@ -438,6 +454,12 @@ fn cmd_verify(opts : Options) -> Int32 {
     }
   }
   let rec_len = layout.byte_length
+  // 零长度布局（如只有 `01 EMPTY.`）没有任何字段，除零会以运行时栈崩溃的
+  // 方式暴露。空布局意味着「没有任何数据契约」，verify 对它无事可做。
+  if rec_len == 0 {
+    eprintln("verify: layout has zero length (no fields); nothing to verify")
+    return EXIT_DATA
+  }
   if data.length() % rec_len != 0 {
     eprintln(
       "verify: data length \{data.length()} is not a multiple of record length \{rec_len}",

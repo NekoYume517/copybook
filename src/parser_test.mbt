@@ -271,8 +271,11 @@ test "usage: 组项上的 USAGE 记入 group_usage" {
     Some(u) => assert_eq(u.name(), "COMP-3")
     None => fail("组项应有 group_usage")
   }
-  // 子项自己的 PIC 仍是 Display（是否继承由布局层决定）
-  assert_eq(usage_of(roots[0].children[0]), "DISPLAY")
+  // 组级 USAGE 在建树时即落到无自身 USAGE 的基本项（C5 修复）：
+  // `10 A PIC S9(4).` 没写 USAGE，继承组的 COMP-3。
+  // 继承发生在 parser 构造 FieldSpec 时 —— FieldSpec 不可变，构造期
+  // 注入是唯一可行时机，布局层拿到的是已继承的最终形态。
+  assert_eq(usage_of(roots[0].children[0]), "COMP-3")
 }
 
 ///|

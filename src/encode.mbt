@@ -122,6 +122,14 @@ fn encode_zoned(
     } else {
       w.set(offset + width, sign_byte)
     }
+  } else if pic.sign_leading {
+    // 内嵌 LEADING 符号：首字节高半字节是符号，其余字节 F 区。
+    // 与 decode_zoned 的 is_sign_pos 逻辑严格对称。
+    for i = 0; i < width; i = i + 1 {
+      let digit = padded[i].to_int() - '0'.to_int()
+      let zone = if i == 0 { sign_nibble } else { 0xF }
+      w.set(offset + i, (zone << 4) | digit)
+    }
   } else {
     for i = 0; i < width; i = i + 1 {
       let digit = padded[i].to_int() - '0'.to_int()
@@ -158,10 +166,20 @@ fn encode_packed(
         ),
       )
   }
-  // 无符号字段的 -0：packed 虽有独立符号半字节，但无符号字段解出负号会
-  // 被 decode 拒绝（"unsigned packed decimal has negative sign"），编码
-  // 出一条自己都解不回的记录是自相矛盾的输出 —— 统一按正号写 0xC。
-  let sign_nibble = if d.negative && pic.signed { 0xD } else { 0xC }
+  // 符号半字节：
+  //   - 有符号字段（PIC 带 S）：正 0xC、负 0xD（负零在 packed 里合法，保留）
+  //   - 无符号字段：一律 0xF。IBM 标准规定无符号 packed 的正号是 0xF，
+  //     不是 0xC —— 用 0xC 会让标准生成的 `12 3F` 无法字节一致地往返。
+  //     （decode 侧接受 C/D/F 三种正号，所以旧写法只是丢往返，不丢数据。）
+  let sign_nibble = if pic.signed {
+    if d.negative {
+      0xD
+    } else {
+      0xC
+    }
+  } else {
+    0xF
+  }
   // 数字串 + 符号半字节，按半字节流写出
   let mut digit_index = 0
   for i = 0; i < bytes_needed; i = i + 1 {
@@ -643,6 +661,64 @@ pub fn encode_record(
 ) -> Result[Bytes, DecodeError] {
   let w = Writer::new(layout.byte_length)
   for field in layout.fields {
+    // OCCURS n>1：按元素逐个写回，键为 `PATH(i)`（1 起始），与 decode 的
+    // 展开规则互为镜像。某个元素在 map 里缺失时按「未赋值存储」处理
+    // （数值 0 / 字符空格），与单字段路径的 Null 语义一致 —— 这是 JSONL
+    // 只给部分字段时能跑通的前提，但**给出的值超长仍然报错**。
+    if field.occurs > 1 {
+      let mut k = 1
+      while k <= field.occurs {
+        let elem : FieldLayout = {
+          ..field,
+          offset: field.offset + (k - 1) * field.byte_length,
+        }
+        let key = "\{field.path}(\{k})"
+        let scoped : Map[String, CellValue] = Map([])
+        match values.get(key) {
+          Some(v) => scoped[key] = v
+          None => ()
+        }
+        // 未给下标键但给了裸名/主路径：只有第 1 个元素用它（宽容手写 JSON）
+        if k == 1 {
+          match values.get(field.path) {
+            Some(v) => scoped[field.path] = v
+            None => ()
+          }
+          match values.get(field.name) {
+            Some(v) => scoped[field.name] = v
+            None => ()
+          }
+        }
+        let r = encode_field(w, elem, scoped)
+        match r {
+          Ok(_) => ()
+          Err(e) => return Err(e)
+        }
+        k = k + 1
+      }
+      continue
+    }
+    // REDEFINES 语义修正（C2）：重定义视图只是**同一段字节的另一种读法**。
+    // 若调用方没有为重定义视图提供值（decode 宽容路径把它解成 Null），
+    // 编码端**绝不能写默认值** —— 那会把主视图已写好的字节覆盖成
+    // 0x40/0x00（真实踩过：redefines.cpy 的合法记录被写成 6 个 0x40）。
+    // 主视图必须先写：fields 按 offset 排序、主视图在前，所以这里只需
+    // 跳过「没有显式值」的重定义视图。
+    if field.redefine_group != 0 {
+      let has_value = match values.get(field.path) {
+        Some(Null) => false
+        Some(_) => true
+        None =>
+          match values.get(field.name) {
+            Some(Null) => false
+            Some(_) => true
+            None => false
+          }
+      }
+      if !has_value {
+        continue
+      }
+    }
     let r = encode_field(w, field, values)
     match r {
       Ok(_) => ()
@@ -680,15 +756,28 @@ pub fn encode_records(
 /// 这是 `copybook verify` 的核心：它比"值相等"严格得多 —— 值相等但
 /// 字节不同意味着编码器写出了另一种合法形态（例如把 0xC 正号写成 0xF），
 /// 对下游做二进制比对或重发报文时会出问题。
+///
+/// **REDEFINES 视图的处理**：自检比对的是「主视图读回、重定义视图原样
+/// 保留」后的再编码。重定义视图与主视图共享字节，但两种解释未必都能
+/// 通过各自的严格校验（`redefines.cpy` 里 `RAW-BYTE X(6)` 的字节是
+/// packed 数字，按文本读永远不是可打印 EBCDIC）——这不是数据错，是
+/// "同一字节的另一种读法"本身不成立。因此：
+///   - 主视图解码失败 → 报错（数据真坏了）
+///   - 重定义视图解码失败 → 从 map 里删掉该键再编码，**主视图的值
+///     仍逐字节写回原位**
+///   - 比对时跳过「本记录中只有重定义视图覆盖」的字节没有意义——
+///     主视图覆盖了全部字节，逐字节比对照常进行
 pub fn roundtrip_check(
   layout : RecordLayout,
   record : BytesView,
 ) -> Result[Int32?, DecodeError] {
-  // 用严格版解码：自检要保证每个视图都自洽
-  let values = match decode_record_strict(layout, record) {
+  // 宽容版解码：主视图失败照样报错，重定义视图失败置 Null
+  let values = match decode_record(layout, record) {
     Ok(v) => v
     Err(e) => return Err(e)
   }
+  // encode_record 对 Null 的重定义视图不再写默认值（C2），主视图字节
+  // 会被原样写回 —— 无需手工删除键。
   let reencoded = match encode_record(layout, values) {
     Ok(b) => b
     Err(e) => return Err(e)

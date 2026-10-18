@@ -198,9 +198,11 @@ fn decode_zoned(
     return Err(InvalidNumeric(base_offset, "empty zoned decimal field"))
   }
   // 独立符号字节：LEADING 在开头，TRAILING 在结尾。
+  // LEADING 时数字是 [1..n)——首字节是符号，其余全是数字。曾经写成
+  // `bytes[1:n-1]`，把最后一个数字字节也切掉了，`+123` 解出 12。
   let digit_bytes : BytesView = if sign_separate {
     if sign_leading {
-      bytes[1:n - 1]
+      bytes[1:n]
     } else {
       bytes[:n - 1]
     }
@@ -246,8 +248,17 @@ fn decode_zoned(
         ),
       )
     }
-    // 末字节的高半字节是符号
-    if i == dn - 1 {
+    // 符号半字节的位置由 SIGN 子句决定：
+    //   - TRAILING（默认）→ 末字节高半字节
+    //   - LEADING（内嵌，非 SEPARATE）→ 首字节高半字节，其余字节必须 F 区
+    let is_sign_pos = if sign_separate {
+      false // 独立符号：数字字节全是 F 区
+    } else if sign_leading {
+      i == 0
+    } else {
+      i == dn - 1
+    }
+    if is_sign_pos {
       match hi {
         // 0xC / 0xF 正，0xD 负
         0xC | 0xF => embedded_negative = false
@@ -260,7 +271,7 @@ fn decode_zoned(
             ),
           )
       }
-    } else if hi != 0xF && hi != 0xC && hi != 0xD {
+    } else if hi != 0xF {
       return Err(
         InvalidNumeric(
           base_offset + i,
@@ -620,6 +631,30 @@ fn decode_record_impl(
   }
   let out : Map[String, CellValue] = Map([])
   for field in layout.fields {
+    // OCCURS n>1：数据面按元素逐个展开，键带 1 起始下标 `PATH(i)`。
+    // 布局层的 `byte_length` 是单元素长度，`total_length` 才是全部存储；
+    // 曾经只解第 0 个元素，`OCCURS 5` 的记录有 4/5 的数据被静默丢掉。
+    if field.occurs > 1 {
+      let mut k = 1
+      while k <= field.occurs {
+        let elem : FieldLayout = {
+          ..field,
+          offset: field.offset + (k - 1) * field.byte_length,
+        }
+        let key = "\{field.path}(\{k})"
+        match decode_field(elem, record) {
+          Ok(v) => out[key] = v
+          Err(e) =>
+            if strict || field.redefine_group == 0 {
+              return Err(e)
+            } else {
+              out[key] = Null
+            }
+        }
+        k = k + 1
+      }
+      continue
+    }
     let r = decode_field(field, record)
     match r {
       Ok(v) => out[field.path] = v
@@ -649,6 +684,22 @@ pub fn decode_record_ordered(
   }
   let out : Array[CellValue] = []
   for field in layout.fields {
+    // 与 decode_record_impl 的 OCCURS 展开保持一致：每个元素各占一列
+    if field.occurs > 1 {
+      let mut k = 1
+      while k <= field.occurs {
+        let elem : FieldLayout = {
+          ..field,
+          offset: field.offset + (k - 1) * field.byte_length,
+        }
+        match decode_field(elem, record) {
+          Ok(v) => out.push(v)
+          Err(e) => return Err(e)
+        }
+        k = k + 1
+      }
+      continue
+    }
     match decode_field(field, record) {
       Ok(v) => out.push(v)
       Err(e) => return Err(e)

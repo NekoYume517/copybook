@@ -387,8 +387,14 @@ fn parse_program(p : ParserState) -> Array[FieldSpec] raise ParseError {
     })
   }
 
-  // 第二遍：建树
-  let (roots, _) = build_children(flat, 0, 0)
+  // 第二遍：建树，同时传播组级 USAGE（C5）。
+  // COBOL 允许把 USAGE 写在组项上（`05 G USAGE COMP-3.`），组内没有自己
+  // USAGE 子句的基本项继承它。逐项解析时互相看不到，而 FieldSpec 是不可变
+  // 值，构造完成后再改写不了 —— 所以继承必须在 build_children **构造**
+  // FieldSpec 时完成，自上而下把 inherited usage 传进去。
+  // 优先级：自身显式声明 > 上层继承；无法区分「显式 USAGE DISPLAY」与
+  // 「默认 DISPLAY」时按 IBM 编译器的行为，组声明优先。
+  let (roots, _) = build_children(flat, 0, 0, None)
   roots
 }
 
@@ -401,17 +407,38 @@ fn parse_program(p : ParserState) -> Array[FieldSpec] raise ParseError {
 /// 这个判定之所以成立，是因为 COBOL 的层级号保证了：
 /// 一棵子树的全部后代层级号都严格大于子树根的层级号，
 /// 而子树结束后遇到的下一个项的层级号一定 `<= 子树根层级`。
+
+///|
+/// Usage 的结构相等比较（enum 无参数变体；类型未实现 Eq trait）。
+fn usage_same(a : Usage, b : Usage) -> Bool {
+  match (a, b) {
+    (Display, Display) => true
+    (Comp, Comp) => true
+    (Comp3, Comp3) => true
+    (Comp1, Comp1) => true
+    (Comp2, Comp2) => true
+    _ => false
+  }
+}
+
+///|
 fn build_children(
   flat : Array[RawEntry],
   start : Int32,
   parent_level : Int32,
+  inherited_usage : Usage?,
 ) -> (Array[FieldSpec], Int32) raise ParseError {
   let out : Array[FieldSpec] = []
   let mut i = start
   while i < flat.length() && flat[i].level > parent_level {
     let e = flat[i]
     i = i + 1
-    let (kids, next_i) = build_children(flat, i, e.level)
+    // 本节点的有效组级 USAGE：自身声明的优先，否则继承上层
+    let down : Usage? = match e.group_usage {
+      Some(u) => Some(u)
+      None => inherited_usage
+    }
+    let (kids, next_i) = build_children(flat, i, e.level, down)
     i = next_i
     // 基本项（有 PIC）不能再挂子项
     if kids.length() > 0 {
@@ -425,10 +452,25 @@ fn build_children(
         None => ()
       }
     }
+    // 组级 USAGE 落到基本项：仅有 PIC 且继承到的 usage 与自身不同时改写。
+    // Usage 没有 Eq，按构造子比较（enum 无参数变体，结构相等即可）。
+    let final_pic : PicClause? = match e.pic {
+      Some(pc) =>
+        match down {
+          Some(u) =>
+            if usage_same(pc.usage, u) {
+              Some(pc)
+            } else {
+              Some({ ..pc, usage: u, })
+            }
+          None => Some(pc)
+        }
+      None => None
+    }
     out.push({
       level: e.level,
       name: e.name,
-      pic: e.pic,
+      pic: final_pic,
       redefines: e.redefines,
       occurs: e.occurs,
       occurs_min: e.occurs_min,

@@ -392,11 +392,59 @@ fn compile_field(
     }
     None => {
       // 组项：递归子项，组单次跨度 = 组内游标推进量。
+      //
+      // **OCCURS n>1 的组必须把组内叶子展开成 n 份**（C1）。
+      // 旧实现只在布局层算对总长度，数据面（decode/encode）面对的
+      // leaves 里每组字段只有第 0 次出现的条目 —— `OCCURS 5` 的记录
+      // 有 4/5 的数据被静默丢弃。
+      //
+      // 展开方法：记下递归前的叶子数，递归后得到单元素跨度 inner，
+      // 把这批新叶子重写为 occurs 份 —— 第 i 份的 offset 加 i*inner，
+      // 路径加 `(i)` 后缀（1 起始），occurs 归 1（下游不再需要展开）。
+      // FieldLayout 是不可变值，但 Builder.leaves 是可变数组，可以
+      // 在编译期整体替换。
+      let leaf_mark = b.leaves.length()
+      let all_mark = b.all.length()
       for child in spec.children {
         let _ = compile_field(b, child, path, groups, group_id)
       }
       let inner = b.cursor - field_base
       let total = inner * occurs
+
+      // 摊平组级 OCCURS：把递归期间新增的每个叶子重写为 occurs 份。
+      // 前提：本组是「叶子自带 OCCURS」以外的常见形态（叶子的 occurs==1）。
+      // 叶子自带 OCCURS 且又被组级 OCCURS 包裹的组合极少见，遇到时保留
+      // 叶子自身展开、组维度不展开 —— 与旧行为一致，至少不错位。
+      if occurs > 1 {
+        let mut i = leaf_mark
+        while i < b.leaves.length() {
+          let leaf = b.leaves[i]
+          if leaf.occurs > 1 {
+            // 叶子自带 OCCURS：无法安全摊平嵌套，保持原样并跳过
+            i = i + 1
+            continue
+          }
+          // 该叶子在单元素组内的相对偏移
+          let rel = leaf.offset - field_base
+          // 先移除原条目，再按出现序插入展开副本
+          let _removed = b.leaves.remove(i)
+          let mut k = 1
+          while k <= occurs {
+            let expanded : FieldLayout = {
+              ..leaf,
+              offset: field_base + rel + (k - 1) * inner,
+              path: "\{leaf.path}(\{k})",
+              occurs: 1,
+              total_length: leaf.byte_length,
+            }
+            b.leaves.insert(i + (k - 1), expanded)
+            k = k + 1
+          }
+          // 数组增长了 occurs-1；下一个源条目位置相应后移
+          i = i + occurs
+        }
+      }
+
       let fl = FieldLayout::{
         name: spec.name,
         path,
@@ -412,6 +460,9 @@ fn compile_field(
       b.by_name[spec.name.to_lower()] = field_base
       b.by_name[path.to_lower()] = field_base
       b.cursor = field_base + total
+      // all_mark 之后新增的子项条目保持原样（渲染组结构用），
+      // 但数据面只看 leaves，已经展开完毕。
+      ignore(all_mark)
       total
     }
   }
