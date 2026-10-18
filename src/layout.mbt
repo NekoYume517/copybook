@@ -326,6 +326,7 @@ fn collect_flat(specs : Array[FieldSpec], out : Array[FieldSpec]) -> Unit {
 /// `group_id` 由 `collect_redefine_groups` 预先分配好；0 表示不参与重定义。
 ///
 /// 返回值是该字段**单次出现**占用的字节数。
+
 ///|
 /// 带溢出检查的偏移加法（C9）。
 ///
@@ -333,11 +334,16 @@ fn collect_flat(specs : Array[FieldSpec], out : Array[FieldSpec]) -> Unit {
 /// 静默回绕成 1410065408 —— 一个看起来正常但完全错误的记录长度。
 /// 偏移运算必须显式检查：布局是后续一切解码的基线，这里的错误
 /// 传播到每一条记录。
+
 ///|
 /// 带溢出检查的乘法（C9 配套）：跨度 = 单元素长度 × 出现次数。
 /// 乘法必须先于加法受保护：10^10 在乘法处就已回绕，checked_offset
 /// 看到的已是垃圾值。
-fn checked_mul(len : Int32, occurs : Int32, what : String) -> Int32 raise ParseError {
+fn checked_mul(
+  len : Int32,
+  occurs : Int32,
+  what : String,
+) -> Int32 raise ParseError {
   let total = len.to_int64() * occurs.to_int64()
   if total > 2147483647L {
     raise InvalidLayout(
@@ -348,7 +354,11 @@ fn checked_mul(len : Int32, occurs : Int32, what : String) -> Int32 raise ParseE
 }
 
 ///|
-fn checked_offset(base : Int32, span : Int32, what : String) -> Int32 raise ParseError {
+fn checked_offset(
+  base : Int32,
+  span : Int32,
+  what : String,
+) -> Int32 raise ParseError {
   let total = base.to_int64() + span.to_int64()
   if total > 2147483647L {
     raise InvalidLayout(

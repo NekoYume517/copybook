@@ -279,9 +279,7 @@ fn map_of(pairs : Array[(String, CellValue)]) -> Map[String, CellValue] {
 test "C8: COMP 拒绝超过十进制位数的值（与 DISPLAY 同规则）" {
   // PIC S9(2) COMP 只占 1 字节，二进制容量装得下 100，
   // 但字段语义是「2 位十进制」——100 超出，必须报错而不是静默接受。
-  let layout = compile_layout(
-    parse_copybook("01 R.\n  05 A PIC S9(2) COMP.\n"),
-  )
+  let layout = compile_layout(parse_copybook("01 R.\n  05 A PIC S9(2) COMP.\n"))
   inspect(layout.byte_length, content="1")
   match encode_record(layout, map_of([("A", Int(100L))])) {
     Ok(_) => inspect(false, content="100 into S9(2) COMP should fail")
@@ -345,9 +343,7 @@ test "C11: PIC N 的填充字节是 EBCDIC 空格，标准数据逐字节往返"
 
 ///|
 test "C12: Int(-42) 写 COMP 的符号不再翻转" {
-  let layout = compile_layout(
-    parse_copybook("01 R.\n  05 A PIC S9(4) COMP.\n"),
-  )
+  let layout = compile_layout(parse_copybook("01 R.\n  05 A PIC S9(4) COMP.\n"))
   // 库 API 的 Int 输入路径：S9(4) COMP 占 1 字节，-42 = 0xD6（补码），
   // 不是 0x2A（+42）
   match encode_record(layout, map_of([("A", Int(-42L))])) {

@@ -431,11 +431,7 @@ fn as_decimal(
       // 掩盖了它，但库 API 的 Int 输入会写错字节。
       // 规范化：系数恒为绝对值，符号只由 negative 表达。
       align_scale(
-        Decimal::from_parts(
-          if i < 0L { -i } else { i },
-          0,
-          i < 0L,
-        ),
+        Decimal::from_parts(if i < 0L { -i } else { i }, 0, i < 0L),
         expected_scale,
         offset,
       )
