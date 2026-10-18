@@ -6,7 +6,9 @@
 ///   - `Json::Number` 无 `repr`（手写 JSON，如 `42`）→ 用 Double 的字符串形式
 ///
 /// 其他值：
-///   - `String` → Text（数值字段在 encode 层会被解析成 Decimal）
+///   - `String` → Text（数值字段在 encode 层会被解析成 Decimal；
+///     但 `"Infinity"` / `"-Infinity"` / `"NaN"` 是 render_jsonl 为
+///     COMP-1/2 非有限值写出的**专用表示**，解回 Float 而不是 Text）
 ///   - `null`   → Null（编码时按 0/空格补齐）
 ///   - `true/false` → Bool
 ///   - 数组/对象 → 该字段跳过（不猜含义）
@@ -30,7 +32,18 @@ pub fn parse_jsonl_row(
         }
         match raw {
           None => ()
-          Some(Json::String(s)) => out[field.path] = Text(s)
+          Some(Json::String(s)) => {
+            // 非有限浮点的字符串表示（IEEE 754 文本约定）优先于 Text
+            if s == "Infinity" {
+              out[field.path] = Float(1.0 / 0.0)
+            } else if s == "-Infinity" {
+              out[field.path] = Float(-1.0 / 0.0)
+            } else if s == "NaN" {
+              out[field.path] = Float(0.0 / 0.0)
+            } else {
+              out[field.path] = Text(s)
+            }
+          }
           Some(Json::Number(d, repr~)) => {
             let text = match repr {
               Some(r) => r

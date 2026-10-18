@@ -406,6 +406,65 @@ test "R2: 嵌套 OCCURS 键名下标按外层→内层顺序" {
   }
 }
 
+///|
+test "R3: COMP-1/2 的 Inf/NaN 输出合法 JSON 并可回读" {
+  let layout = compile_layout(
+    parse_copybook("01 R.\n  05 F1 PIC 9 USAGE COMP-1.\n  05 F2 PIC 9 USAGE COMP-2.\n"),
+  )
+  // 构造 +Inf / -Inf / NaN 行
+  let pos_inf = 1.0 / 0.0
+  let neg_inf = -1.0 / 0.0
+  let nan = 0.0 / 0.0
+  let rows : Array[Map[String, CellValue]] = []
+  let m1 : Map[String, CellValue] = Map([])
+  m1["R.F1"] = Float(pos_inf)
+  m1["R.F2"] = Float(neg_inf)
+  let m2 : Map[String, CellValue] = Map([])
+  m2["R.F1"] = Float(nan)
+  m2["R.F2"] = Null
+  rows.push(m1)
+  rows.push(m2)
+  let jsonl = render_jsonl(layout, rows)
+  // 每行必须是合法 JSON：非有限值带引号输出
+  inspect(jsonl.contains("\"Infinity\""), content="true")
+  inspect(jsonl.contains("\"-Infinity\""), content="true")
+  inspect(jsonl.contains("\"NaN\""), content="true")
+  inspect(jsonl.contains("Infinity"), content="true")
+  // 回读：字符串形式能解回 Float
+  let lines = jsonl.split("\n").collect()
+  match parse_jsonl_row(layout, lines[0].to_owned()) {
+    Ok(m) =>
+      match m.get("R.F1") {
+        Some(Float(f)) => {
+          // +Inf == +Inf 成立；用相等而不是减法（Inf-Inf = NaN）
+          inspect(f == pos_inf, content="true")
+        }
+        other => {
+          println("F1 expected Float(Inf)")
+          inspect(false, content="true")
+        }
+      }
+    Err(msg) => {
+      println("parse row1 failed: \{msg}")
+      inspect(false, content="true")
+    }
+  }
+  match parse_jsonl_row(layout, lines[1].to_owned()) {
+    Ok(m) =>
+      match m.get("R.F1") {
+        Some(Float(f)) => inspect(f != f, content="true") // NaN != NaN
+        other => {
+          println("F1 expected Float(NaN)")
+          inspect(false, content="true")
+        }
+      }
+    Err(msg) => {
+      println("parse row2 failed: \{msg}")
+      inspect(false, content="true")
+    }
+  }
+}
+
 // ============================================================
 // 辅助
 // ============================================================

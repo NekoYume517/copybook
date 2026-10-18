@@ -14,6 +14,10 @@
 ///   - `Int`     → JSON number（**用 `repr` 传十进制原文**，避免 Int64 被
 ///                 Double 截断：`123456789012345678` 转 Double 会丢精度）
 ///   - `Decimal` → JSON number，按 `to_string()` 的十进制原文
+///   - `Float`   → 有限值输出 JSON number（`repr` 原文）；**±Inf/NaN 不是
+///                 合法 JSON 字面量**，按 IEEE 754 文本约定输出带引号的
+///                 字符串 `"Infinity"` / `"-Infinity"` / `"NaN"`。
+///                 `parse_jsonl_row` 能把这三个串解回 Float（R4 契约）。
 ///   - `Bool`    → JSON boolean
 ///   - `Bytes`   → 十六进制小写字符串（`"0102AB"`），因为 JSON 没有字节类型
 ///
@@ -26,7 +30,17 @@ fn cell_to_json(v : CellValue) -> Json {
     Int(i) => Json::number(0.0, repr=i.to_string())
     Decimal(d) => Json::number(0.0, repr=d.to_string())
     Bool(b) => Json::boolean(b)
-    Float(f) => Json::number(f, repr=f.to_string())
+    Float(f) =>
+      if f != f {
+        // NaN：自反不等是 NaN 的唯一可靠判定
+        Json::string("NaN")
+      } else if f == 1.0 / 0.0 {
+        Json::string("Infinity")
+      } else if f == -1.0 / 0.0 {
+        Json::string("-Infinity")
+      } else {
+        Json::number(f, repr=f.to_string())
+      }
     Bytes(bs) => {
       let sb = StringBuilder()
       for i = 0; i < bs.length(); i = i + 1 {
