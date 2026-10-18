@@ -530,6 +530,24 @@ test "R6: Int64::MIN 系数的 abs 不回绕" {
   }
 }
 
+///|
+test "R7: 词法层超长数字报 LexError 而不是静默回绕" {
+  // parse_digits 无溢出防护：OCCURS 99999999999 的 11 位数字在
+  // Int32 里回绕成一个看似正常的值。照抄 parser 侧 digits_to_int
+  // 的限长（>9 位报错）。
+  let err = try {
+    let _ = tokenize("01 R.\n  05 A OCCURS 99999999999 TIMES.\n")
+    "<无错误>"
+  } catch {
+    e => e.to_display()
+  }
+  let ok = err.contains("超出") || err.contains("溢出") || err.contains("too")
+  if !ok {
+    println("actual: \{err}")
+  }
+  inspect(ok, content="true")
+}
+
 // ============================================================
 // 辅助
 // ============================================================

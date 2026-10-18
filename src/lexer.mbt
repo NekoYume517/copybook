@@ -592,11 +592,20 @@ pub fn tokenize(source : StringView) -> Array[Token] raise ParseError {
 }
 
 ///|
-/// 纯数字文本转 Int（不做溢出检查，COBOL 里的数字都在安全范围内）
-fn parse_digits(text : String) -> Int32 {
+/// 纯数字文本转 Int，带溢出防护。
+///
+/// 照抄 parser 侧 digits_to_int 的限长：超过 9 位（Int32 十进制安全
+/// 上限 2,147,483,647）报 LexError —— `OCCURS 99999999999` 这类输入
+/// 曾经静默回绕成一个看似正常的值，进入布局层后产生完全错误的
+/// 偏移。9 位上限已覆盖一切合法用途（OCCURS/级别号/PIC 重复次数
+/// 都远小于此）。
+fn parse_digits(text : String) -> Int32 raise ParseError {
+  let cs = text.to_array()
+  if cs.length() == 0 || cs.length() > 9 {
+    raise LexError(0, 0, "数字 '\{text}' 超出 Int32 范围（最多 9 位）")
+  }
   let mut n = 0
   let mut i = 0
-  let cs = text.to_array()
   while i < cs.length() {
     n = n * 10 + (cs[i].to_int() - 48)
     i = i + 1
