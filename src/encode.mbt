@@ -54,8 +54,18 @@ fn Writer::to_bytes(self : Writer) -> Bytes {
 ///
 /// 数字串是 `coefficient` 的十进制表示（不含符号），长度可能**短于**
 /// 字段需要的位数（此时左侧补 0），也可能**长于**（溢出，报错）。
+///
+/// Int64::MIN 的 `abs()` 回绕仍为负，直接 `.abs().to_string()` 会产出
+/// 带负号的串——与调用方再拼的负号叠加成 "--..."。用同 decode 侧的
+/// 先除后余方案（两函数在同一契约上，串格式必须一致）。
 fn decimal_digits(d : Decimal) -> String {
-  d.coefficient.abs().to_string()
+  let c = d.coefficient
+  if c == -9223372036854775807L - 1L {
+    // 与 decode 侧 int64_abs_string 同构：MIN/10 的 abs 拼 "8"
+    "\{(-9223372036854775808L / 10L).abs()}8"
+  } else {
+    c.abs().to_string()
+  }
 }
 
 ///|

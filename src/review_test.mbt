@@ -498,6 +498,38 @@ test "R5: 子项显式 USAGE 优先于组级 USAGE 继承" {
   }
 }
 
+///|
+test "R6: Int64::MIN 系数的 abs 不回绕" {
+  // coefficient == Int64::MIN 时 abs() 回绕仍为负：
+  // to_string 输出 "--9223..."（双负号），encode 的 decimal_digits
+  // 同样拿到负数串。
+  let dmin = Decimal::from_parts(-9223372036854775808L, 0, true)
+  let s = dmin.to_string()
+  // 不得出现双负号；首位 '-' 后面是纯数字
+  inspect(s.has_prefix("-"), content="true")
+  inspect(s.has_prefix("--"), content="false")
+  // 对称正侧：negative=false 且 coefficient 为正也可以表达同值
+  let dmax = Decimal::from_parts(9223372036854775807L, 0, false)
+  inspect(dmax.to_string(), content="9223372036854775807")
+  // encode 路径：to_string 修复后 to_display 不再产出 "--"；encode 对
+  // MIN 绝对值（19 位）超出 18 位字段容量，按「绝不静默修正」明确报错。
+  let layout = compile_layout(
+    parse_copybook("01 R.\n  05 A PIC S9(18) COMP-3.\n"),
+  )
+  let m : Map[String, CellValue] = Map([])
+  m["R.A"] = Decimal(dmin)
+  match encode_record(layout, m) {
+    Ok(_) => inspect(false, content="19 digits must not fit S9(18)")
+    Err(InvalidNumeric(_, msg)) => {
+      // 错误消息里的值串也是修复后的 |MIN|（19 位），无 "--"
+      inspect(msg.has_prefix("value -"), content="false")
+      inspect(msg.contains("9223372036854775808"), content="true")
+      inspect(msg.has_prefix("--"), content="false")
+    }
+    Err(_) => inspect(false, content="wrong error kind")
+  }
+}
+
 // ============================================================
 // 辅助
 // ============================================================

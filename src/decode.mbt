@@ -52,6 +52,23 @@ pub fn Decimal::from_parts(coef : Int64, scale : Int32, neg : Bool) -> Decimal {
 }
 
 ///|
+/// Int64 的绝对值串。
+///
+/// `Int64::MIN` 的 `abs()` 回绕仍为负（二进制补码没有 +2^63），
+/// `.abs().to_string()` 会输出负号、调用方再拼一个负号变成 "--..."。
+/// 改用**先除后余**：|MIN| = 9223372036854775808 = (MIN/10) 的 abs × 10
+/// + 8，两段都在 Int64 非负范围内。
+fn int64_abs_string(v : Int64) -> String {
+  if v == -9223372036854775807L - 1L {
+    // MIN/10 = -922337203685477580，abs 后是高 18 位；余数 8 是末位。
+    // 高位 × 10 会溢出，所以两段以字符串拼接而不是数值运算。
+    "\{(-9223372036854775808L / 10L).abs()}8"
+  } else {
+    v.abs().to_string()
+  }
+}
+
+///|
 /// 渲染成字符串：`-1234567.89`、`0.005`、`42`。
 ///
 /// 规则：
@@ -67,13 +84,13 @@ pub fn Decimal::to_string(self : Decimal) -> String {
   if self.scale < 0 {
     let sb = StringBuilder()
     sb.write_string(sign)
-    sb.write_string(self.coefficient.abs().to_string())
+    sb.write_string(int64_abs_string(self.coefficient))
     for i = 0; i < -self.scale; i = i + 1 {
       sb.write_char('0')
     }
     return sb.to_string()
   }
-  let digits = self.coefficient.abs().to_string()
+  let digits = int64_abs_string(self.coefficient)
   if self.scale == 0 {
     return "\{sign}\{digits}"
   }
