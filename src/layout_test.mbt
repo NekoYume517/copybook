@@ -284,9 +284,25 @@ test "OCCURS 在最外层叶子上" {
   }
   let layout = compile_layout([group(1, "R", [f])])
   inspect(layout.byte_length, content="12")
-  let tags = layout.find("TAGS").unwrap()
-  inspect(tags.byte_length, content="4")
-  inspect(tags.total_length, content="12")
+  // 叶子自带 OCCURS 与组级一样在布局层摊平成 TAGS(1..3)（回归修复）：
+  // 数据面（decode/render/encode）只见过摊平后的条目，裸路径不再存在，
+  // 否则 decode 写 R.TAGS(i) 而 render 查 R.TAGS 会输出 {"R.TAGS":null}。
+  // by_name 保留裸名 -> 第一个元素的偏移，手写 JSON 用裸名仍可命中。
+  // find 扫 all_fields 会命中 TAGS 组条目本身（合法）；数据面 fields
+  // 里必须只有带下标的展开条目，否则 decode 写 R.TAGS(i) 而 render 查
+  // R.TAGS 会输出 {"R.TAGS":null}
+  inspect(layout.fields.length(), content="3")
+  inspect(layout.fields[0].path, content="R.TAGS(1)")
+  inspect(layout.fields[2].path, content="R.TAGS(3)")
+  let t1 = layout.find("TAGS(1)").unwrap()
+  let t2 = layout.find("TAGS(2)").unwrap()
+  let t3 = layout.find("TAGS(3)").unwrap()
+  inspect(t1.offset, content="0")
+  inspect(t2.offset, content="4")
+  inspect(t3.offset, content="8")
+  inspect(t1.byte_length, content="4")
+  inspect(t1.occurs, content="1")
+  inspect(t3.total_length, content="4")
 }
 
 ///|

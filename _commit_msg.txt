@@ -1,0 +1,29 @@
+fix(layout): expand leaf-level OCCURS at build time, aligning decode/render/encode
+
+Regression from the C1 fix, caught by re-verification: group-level OCCURS
+was flattened into PATH(i) leaves at layout time, but a leaf carrying its
+own OCCURS kept path=R.A, occurs=3. decode_record_impl then expanded it at
+runtime into R.A(1..3) keys while render_jsonl / render_table / encode
+still looked up the bare R.A - decode printed {"R.A":null}, verify
+reported a byte mismatch, encode wrote spaces. Two expansion mechanisms,
+two key spaces.
+
+The leaf branch of compile_field now flattens its own OCCURS the same way
+group-level does: offset advanced per element, keys suffixed with a
+1-based occurrence number, occurs normalized to 1. The by_name alias for
+the bare path still points at the first element so hand-written JSON
+keeps working. The runtime expansion branches are gone - layout is the
+single authoritative flattening, and the four consumers stay consistent
+by construction.
+
+Verified: PIC 9(2) OCCURS 3 + X(2) round-trips byte for byte through the
+JSON path, and the layout test now asserts the data-facing fields array
+holds exactly TAGS(1..3).
+
+Also:
+- decode --format jsonl no longer prints a stray trailing blank line
+  (render_jsonl ends each row with a newline; println added one more,
+  so 5 records exported as 6 lines)
+- encode with an empty/blank JSONL input now reports 'input contains no
+  records' and exits 1, symmetric with decode's empty-data-file handling
+  instead of writing 0 bytes as a silent success

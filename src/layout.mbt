@@ -412,6 +412,14 @@ fn compile_field(
   let span = match spec.pic {
     Some(pic) => {
       // 叶子字段：按 PIC 公式算单元素长度。
+      //
+      // **叶子自带 OCCURS 也在这里摊平**（与组级摊平同一机制，回归修复）。
+      // C1 修复只摊平了组级 OCCURS：组内叶子拿到 PATH(i) 键，而带自身
+      // OCCURS 的叶子保留 path=R.A、occurs=3。decode_record_impl 看见
+      // occurs>1 在运行时展开成 R.A(1..3)，但 render_jsonl / render_table
+      // / encode 查的是裸 R.A —— 输出 {"R.A":null}、verify 字节不匹配、
+      // encode 写空格。摊平必须只有一个权威实现，且发生在布局层：
+      // 数据面四条路径（decode/render/jsonl/encode）就全部自动一致。
       let len = pic_byte_length(pic)
       let total = checked_mul(len, occurs, "field '\{spec.name}'")
       let fl = FieldLayout::{
@@ -425,10 +433,31 @@ fn compile_field(
         level: spec.level,
         redefine_group: group_id,
       }
-      if !is_filler {
-        b.leaves.push(fl)
+      if occurs > 1 {
+        // 展开成 occurs 份独立叶子：offset 逐元素推进，键带 1 起始下标，
+        // occurs 归 1（数据面不再看到任何展开语义）。第 1 份同时登记
+        // 裸路径别名（by_name），手写 JSON 用裸名仍能命中第一个元素。
+        let mut k = 1
+        while k <= occurs {
+          let expanded : FieldLayout = {
+            ..fl,
+            offset: field_base + (k - 1) * len,
+            path: "\{path}(\{k})",
+            occurs: 1,
+            total_length: len,
+          }
+          if !is_filler {
+            b.leaves.push(expanded)
+          }
+          b.all.push(expanded)
+          k = k + 1
+        }
+      } else {
+        if !is_filler {
+          b.leaves.push(fl)
+        }
+        b.all.push(fl)
       }
-      b.all.push(fl)
       if !is_filler {
         b.by_name[spec.name.to_lower()] = field_base
         b.by_name[path.to_lower()] = field_base
@@ -458,15 +487,14 @@ fn compile_field(
       let total = checked_mul(inner, occurs, "group '\{spec.name}'")
 
       // 摊平组级 OCCURS：把递归期间新增的每个叶子重写为 occurs 份。
-      // 前提：本组是「叶子自带 OCCURS」以外的常见形态（叶子的 occurs==1）。
-      // 叶子自带 OCCURS 且又被组级 OCCURS 包裹的组合极少见，遇到时保留
-      // 叶子自身展开、组维度不展开 —— 与旧行为一致，至少不错位。
+      // 叶子分支已保证新叶子 occurs==1（叶子自带 OCCURS 同样在叶子分支
+      // 摊平），所以这里的展开总是安全的。
       if occurs > 1 {
         let mut i = leaf_mark
         while i < b.leaves.length() {
           let leaf = b.leaves[i]
           if leaf.occurs > 1 {
-            // 叶子自带 OCCURS：无法安全摊平嵌套，保持原样并跳过
+            // 防御：不应到达；保留原样避免错位
             i = i + 1
             continue
           }

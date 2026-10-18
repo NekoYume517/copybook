@@ -332,7 +332,11 @@ fn cmd_decode(opts : Options) -> Int32 {
         println(@lib.render_table(layout, rows))
         EXIT_OK
       } else {
-        println(@lib.render_jsonl(layout, rows))
+        // render_jsonl 的每行已自带 \n，println 会再补一个换行 →
+        // 5 条记录导出成 6 行（尾部多一个空行）。去掉尾部的单个换行
+        // 再 println，保证恰好 N 条记录 N 行。
+        let text = @lib.render_jsonl(layout, rows)
+        println(if text.length() > 0 { text[:text.length() - 1] } else { text })
         EXIT_OK
       }
   }
@@ -396,6 +400,12 @@ fn cmd_encode(opts : Options) -> Int32 {
         return EXIT_DATA
       }
     }
+  }
+  // 空 JSONL 与 decode 的空数据文件对称：写 0 字节并报成功会让脚本
+  // 误以为转换完成，实际什么都没发生。
+  if rows.length() == 0 {
+    eprintln("encode: input contains no records")
+    return EXIT_DATA
   }
   let bytes = match @lib.encode_records(layout, rows) {
     Ok(b) => b
