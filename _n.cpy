@@ -1,2 +1,0 @@
-01  NREC.
-    05  CODE PIC N(2).
