@@ -108,6 +108,11 @@ pub fn parse_copybook(source : StringView) -> Array[FieldSpec] raise ParseError
 - 层级号 `01` 到 `49` 建树；`66`（RENAMES）和 `88`（条件名）单独收集或忽略（文档说明）。
 - 错误要带行列号。
 
+
+> **记录模型**：`compile_layout` 把整份 copybook 编译为**单条**记录布局。
+> 多个 `01` 层级按「并列拼接」处理（偏移连续），不是 COBOL 的多记录型态语义。
+> `FieldSpec.occurs_depending_on` 记录 ODO 依赖名，存储按上界固定展开。
+
 ## 3. 布局计算 `src/layout.mbt`
 
 ```moonbit

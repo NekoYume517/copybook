@@ -95,6 +95,17 @@ OFFSET  LENGTH  OCCURS  TYPE              NAME
 | `REDEFINES` | ✅ |
 | `SIGN ... SEPARATE` | ✅ |
 | `PIC 66 RENAMES` / `88` 条件名 | 忽略（记录在 AST） |
+| `OCCURS DEPENDING ON` | 按上界展开（固定长度存储），`occurs_depending_on` 字段记录依赖名 |
+| 多个 `01` 层级 | **并列拼接为一条记录**（见下方说明） |
+| 组级 `USAGE` | ✅ 子项继承 |
+
+### 已声明的简化
+
+**多个 `01` 层级**：COBOL 语义里每个 `01` 是一条独立记录（一个文件里可以
+有多种记录型态）。本实现把后续 `01` **并列拼接**成一条更长的记录——
+`compile_layout` 的契约是「一份 copybook 一条记录布局」。如果文件里的数据
+真的是多种记录型态混排，需要按记录类型拆分 copybook 分别处理。这个行为
+写进测试（多 01 偏移连续）而不是悄悄偏离。
 
 EBCDIC 使用 **cp037**（US/Canada）。ASCII 与 EBCDIC 的数字位置完全不同——`'0'` 在 ASCII 是 `0x30`，在 EBCDIC 是 `0xF0`。
 

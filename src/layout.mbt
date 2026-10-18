@@ -86,7 +86,9 @@ pub(all) struct RecordLayout {
 ///
 /// `digits` 对数值类是**整数位**，对字符类是**字符数**；总位数 = digits + scale。
 fn pic_byte_length(pic : PicClause) -> Int32 raise ParseError {
-  let total_digits = pic.digits + pic.scale
+  // C10：存储位数用 storage_digits（P 不占存储）；数值语义的总位数
+  // （digits + scale，含 P 的隐含位）只用于容量校验。
+  let total_digits = pic.storage_digits
   match pic.category {
     National => {
       // 国家字符（UTF-16）在 EBCDIC 记录里是双字节，n 个字符 → 2n 字节。
@@ -169,6 +171,7 @@ fn group_pic(byte_length : Int32) -> PicClause {
     category: Alphanumeric,
     digits: byte_length,
     scale: 0,
+    storage_digits: byte_length,
     signed: false,
     usage: Display,
     sign_separate: false,
@@ -323,6 +326,39 @@ fn collect_flat(specs : Array[FieldSpec], out : Array[FieldSpec]) -> Unit {
 /// `group_id` 由 `collect_redefine_groups` 预先分配好；0 表示不参与重定义。
 ///
 /// 返回值是该字段**单次出现**占用的字节数。
+///|
+/// 带溢出检查的偏移加法（C9）。
+///
+/// \`PIC X(100000) OCCURS 100000\` 的真实跨度是 10^10，Int32 装不下，
+/// 静默回绕成 1410065408 —— 一个看起来正常但完全错误的记录长度。
+/// 偏移运算必须显式检查：布局是后续一切解码的基线，这里的错误
+/// 传播到每一条记录。
+///|
+/// 带溢出检查的乘法（C9 配套）：跨度 = 单元素长度 × 出现次数。
+/// 乘法必须先于加法受保护：10^10 在乘法处就已回绕，checked_offset
+/// 看到的已是垃圾值。
+fn checked_mul(len : Int32, occurs : Int32, what : String) -> Int32 raise ParseError {
+  let total = len.to_int64() * occurs.to_int64()
+  if total > 2147483647L {
+    raise InvalidLayout(
+      "\{what}: length \{len} x OCCURS \{occurs} exceeds Int32 (\{total}); reduce field sizes or OCCURS counts",
+    )
+  }
+  total.to_int()
+}
+
+///|
+fn checked_offset(base : Int32, span : Int32, what : String) -> Int32 raise ParseError {
+  let total = base.to_int64() + span.to_int64()
+  if total > 2147483647L {
+    raise InvalidLayout(
+      "\{what} exceeds Int32 offset range (\{base} + \{span}); reduce field sizes or OCCURS counts",
+    )
+  }
+  total.to_int()
+}
+
+///|
 fn compile_field(
   b : Builder,
   spec : FieldSpec,
@@ -367,7 +403,7 @@ fn compile_field(
     Some(pic) => {
       // 叶子字段：按 PIC 公式算单元素长度。
       let len = pic_byte_length(pic)
-      let total = len * occurs
+      let total = checked_mul(len, occurs, "field '\{spec.name}'")
       let fl = FieldLayout::{
         name: spec.name,
         path,
@@ -387,7 +423,7 @@ fn compile_field(
         b.by_name[spec.name.to_lower()] = field_base
         b.by_name[path.to_lower()] = field_base
       }
-      b.cursor = field_base + total
+      b.cursor = checked_offset(field_base, total, "field '\{spec.name}' span")
       total
     }
     None => {
@@ -409,7 +445,7 @@ fn compile_field(
         let _ = compile_field(b, child, path, groups, group_id)
       }
       let inner = b.cursor - field_base
-      let total = inner * occurs
+      let total = checked_mul(inner, occurs, "group '\{spec.name}'")
 
       // 摊平组级 OCCURS：把递归期间新增的每个叶子重写为 occurs 份。
       // 前提：本组是「叶子自带 OCCURS」以外的常见形态（叶子的 occurs==1）。
@@ -459,7 +495,7 @@ fn compile_field(
       b.all.push(fl)
       b.by_name[spec.name.to_lower()] = field_base
       b.by_name[path.to_lower()] = field_base
-      b.cursor = field_base + total
+      b.cursor = checked_offset(field_base, total, "group '\{spec.name}' span")
       // all_mark 之后新增的子项条目保持原样（渲染组结构用），
       // 但数据面只看 leaves，已经展开完毕。
       ignore(all_mark)

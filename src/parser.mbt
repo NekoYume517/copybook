@@ -111,6 +111,11 @@ pub(all) struct PicClause {
   category : PicCategory
   digits : Int32
   scale : Int32
+  // 实际占存储的数字位数（C10）：P 缩放字符不占存储，所以
+  // storage_digits = 整数位 + 小数位（不含 leading/trailing P）。
+  // zoned/packed/COMP 的字节长度按它计算；`digits + scale` 仍是
+  // 数值语义上的总位数（含 P 的隐含位），用于容量校验。
+  storage_digits : Int32
   signed : Bool
   usage : Usage
   sign_separate : Bool
@@ -696,6 +701,7 @@ fn parse_entry_clauses(
         category: pc.category,
         digits: pc.digits,
         scale: pc.scale,
+        storage_digits: pc.storage_digits,
         signed: pc.signed || sign_separate,
         usage: u,
         sign_separate,
@@ -1030,6 +1036,7 @@ pub fn parse_pic_clause(
       category,
       digits: count_placeholder(chars),
       scale: 0,
+      storage_digits: count_placeholder(chars),
       signed: false,
       usage: Display,
       sign_separate: false,
@@ -1103,6 +1110,7 @@ pub fn parse_pic_clause(
     // 尾随 P 只是把值放大，存储位数不变 → 不影响 digits。
     digits: int_digits,
     scale: frac_digits + leading_p,
+    storage_digits: int_digits + frac_digits,
     signed,
     usage: Display,
     sign_separate: false,
@@ -1185,6 +1193,7 @@ fn parse_edited(
     // 与数字型保持同一契约：digits 是整数位，scale 是小数位
     digits: int_digits,
     scale: frac_digits,
+    storage_digits: int_digits + frac_digits,
     signed,
     usage: Display,
     sign_separate: false,

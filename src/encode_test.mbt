@@ -50,6 +50,7 @@ fn e_one(
     category,
     digits,
     scale,
+    storage_digits: digits + scale,
     signed,
     usage,
     sign_separate,

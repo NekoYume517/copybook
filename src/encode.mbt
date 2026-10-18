@@ -230,10 +230,38 @@ fn encode_binary(
       ),
     )
   }
-  // 容量检查：n 字节有符号能表示 -2^(8n-1) .. 2^(8n-1)-1
+  // 容量检查：n 字节有符号能表示 -2^(8n-1) .. 2^(8n-1)-1。
+  // **十进制位数也必须校验**（C8）：`PIC S9(2) COMP` 只占 1 字节，二进制
+  // 容量 -128..127 足够装 100，但 COBOL 的字段语义是「最多 2 位十进制数」
+  // —— 写 100 会静默改变字段的数值含义（MOVE 99 与 MOVE 100 走不同的
+  // 显示路径）。zoned/packed 都按位数拒绝，COMP 不能例外。
   let bits = width * 8
   let limit : Int64 = 1L << (bits - 1)
   let coef = d.coefficient
+  let dec_limit : Int64 = match field_total_digits(pic) {
+    n => {
+      let mut v : Int64 = 1
+      let mut i = 0
+      while i < n {
+        if v > 92233720368547758L {
+          // 位数 > 18 已在解析期拒绝；这里只是防御
+          v = 9223372036854775807L
+          break
+        }
+        v = v * 10L
+        i = i + 1
+      }
+      v
+    }
+  }
+  if coef >= dec_limit || coef <= -dec_limit {
+    return Err(
+      InvalidNumeric(
+        offset,
+        "value \{coef} exceeds \{field_total_digits(pic)} decimal digits (field holds at most \{dec_limit - 1})",
+      ),
+    )
+  }
   if pic.signed {
     if d.negative && coef > limit {
       return Err(
@@ -396,7 +424,21 @@ fn as_decimal(
   match v {
     Decimal(d) => align_scale(d, expected_scale, offset)
     Int(i) =>
-      align_scale(Decimal::from_parts(i, 0, i < 0L), expected_scale, offset)
+      // C12 修复：负系数必须与 negative 标志**不重复表达**。
+      // 旧写法 from_parts(-42, 0, true) 造出 coefficient=-42 且
+      // negative=true 的双负号；encode_binary 只看 negative，对 -42
+      // 再取一次补码得到 +42 —— 符号翻转。CLI 的 JSON 路径走 Text
+      // 掩盖了它，但库 API 的 Int 输入会写错字节。
+      // 规范化：系数恒为绝对值，符号只由 negative 表达。
+      align_scale(
+        Decimal::from_parts(
+          if i < 0L { -i } else { i },
+          0,
+          i < 0L,
+        ),
+        expected_scale,
+        offset,
+      )
     Text(s) =>
       match parse_decimal_text(s) {
         Some(d) => align_scale(d, expected_scale, offset)
@@ -525,7 +567,10 @@ fn encode_field(
         } else {
           w.set(offset + i * 2, 0x40)
         }
-        w.set(offset + i * 2 + 1, 0x00)
+        // 第二字节写 EBCDIC 空格 0x40（C11）：decode 接受 0x00 或 0x40，
+        // 但 0x00 不是合法 EBCDIC —— 标准工具生成的 N 字段填充是空格。
+        // 写 0x40 让标准数据逐字节往返；decode 的宽容接受保持不变。
+        w.set(offset + i * 2 + 1, 0x40)
       }
       Ok(())
     }

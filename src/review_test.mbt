@@ -274,3 +274,90 @@ fn map_of(pairs : Array[(String, CellValue)]) -> Map[String, CellValue] {
   }
   m
 }
+
+///|
+test "C8: COMP 拒绝超过十进制位数的值（与 DISPLAY 同规则）" {
+  // PIC S9(2) COMP 只占 1 字节，二进制容量装得下 100，
+  // 但字段语义是「2 位十进制」——100 超出，必须报错而不是静默接受。
+  let layout = compile_layout(
+    parse_copybook("01 R.\n  05 A PIC S9(2) COMP.\n"),
+  )
+  inspect(layout.byte_length, content="1")
+  match encode_record(layout, map_of([("A", Int(100L))])) {
+    Ok(_) => inspect(false, content="100 into S9(2) COMP should fail")
+    Err(InvalidNumeric(_, _)) => inspect(true, content="true")
+    Err(_) => inspect(false, content="wrong error kind")
+  }
+  // 99 仍合法（二进制容量之内）
+  match encode_record(layout, map_of([("A", Int(99L))])) {
+    Ok(_) => inspect(true, content="true")
+    Err(e) => {
+      println("99 should fit: \{e.to_display()}")
+      inspect(false, content="true")
+    }
+  }
+}
+
+///|
+test "C9: 布局偏移溢出报 InvalidLayout 而不是回绕" {
+  // 10^10 超出 Int32；旧实现静默回绕成 1410065408
+  // 溢出在布局层（compile_layout），不在语法层——必须显式调用
+  let err = try {
+    let specs = parse_copybook("01 BIG.\n  05 A PIC X(100000) OCCURS 100000.\n")
+    let _ = compile_layout(specs)
+    "<无错误>"
+  } catch {
+    e => e.to_display()
+  }
+  // 实际消息形如 "field 'A': length 100000 x OCCURS 100000 exceeds Int32"
+  // 旧实现这里静默回绕出 1410065408，根本不会进入错误路径
+  let ok = err.contains("exceeds Int32") && err.contains("10000000000")
+  if !ok {
+    println("actual message: \{err}")
+  }
+  inspect(ok, content="true")
+}
+
+///|
+test "C10: 前导 P 不占存储" {
+  // PP9(3)：P 是缩放字符，存储只有 3 个数字位
+  let layout = compile_layout(parse_copybook("01 R.\n  05 A PIC PP9(3).\n"))
+  inspect(layout.byte_length, content="3")
+}
+
+///|
+test "C11: PIC N 的填充字节是 EBCDIC 空格，标准数据逐字节往返" {
+  let layout = compile_layout(parse_copybook("01 R.\n  05 A PIC N(2).\n"))
+  // 标准工具生成的 N 字段填充是 0x40（旧实现写 0x00）
+  let rec : Bytes = b"\xC1\x40\xC2\x40"
+  match roundtrip_check(layout, rec) {
+    Ok(None) => inspect(true, content="true")
+    Ok(Some(off)) => {
+      println("byte mismatch at \{off}")
+      inspect(false, content="true")
+    }
+    Err(e) => {
+      println("roundtrip error: \{e.to_display()}")
+      inspect(false, content="true")
+    }
+  }
+}
+
+///|
+test "C12: Int(-42) 写 COMP 的符号不再翻转" {
+  let layout = compile_layout(
+    parse_copybook("01 R.\n  05 A PIC S9(4) COMP.\n"),
+  )
+  // 库 API 的 Int 输入路径：S9(4) COMP 占 1 字节，-42 = 0xD6（补码），
+  // 不是 0x2A（+42）
+  match encode_record(layout, map_of([("A", Int(-42L))])) {
+    Ok(b) => {
+      inspect(b.length(), content="1")
+      inspect(b[0].to_int(), content="214")
+    }
+    Err(e) => {
+      println("encode failed: \{e.to_display()}")
+      inspect(false, content="true")
+    }
+  }
+}
