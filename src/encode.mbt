@@ -59,9 +59,16 @@ fn decimal_digits(d : Decimal) -> String {
 }
 
 ///|
-/// 计算字段需要写的**总位数**（整数位 + 小数位）。
-fn field_total_digits(pic : PicClause) -> Int32 {
-  pic.digits + pic.scale
+/// 计算编码实际写入的**存储位数**。
+///
+/// 必须用 `storage_digits`，不能用 `digits + scale`：P 缩放位不占存储
+/// （`PIC PP9(3)` 存储是 3 字节 zoned，不是 5 字节；`PIC 9(3)PP` 是 3 字节，
+/// 不是 1 字节）。布局层 `pic_byte_length` 的宽度同源于此，编码宽度一旦
+/// 与布局宽度不一致，pad 之后就会越界写 `Writer::set` panic。
+/// P 的数值语义（×10^±k）由 `as_decimal` → `align_scale` 在编码前折算，
+/// 不通过拉宽存储表达。
+fn field_storage_digits(pic : PicClause) -> Int32 {
+  pic.storage_digits
 }
 
 ///|
@@ -96,7 +103,7 @@ fn encode_zoned(
   pic : PicClause,
   d : Decimal,
 ) -> Result[Unit, DecodeError] {
-  let width = field_total_digits(pic)
+  let width = field_storage_digits(pic)
   let digits = decimal_digits(d)
   let padded = match pad_digits(digits, width) {
     Some(s) => s
@@ -153,7 +160,9 @@ fn encode_packed(
   pic : PicClause,
   d : Decimal,
 ) -> Result[Unit, DecodeError] {
-  let width = field_total_digits(pic)
+  // 存储宽度按 storage_digits（P 不占存储，见 field_storage_digits）；
+  // bytes_needed 与布局层 pic_byte_length 的 Comp3 公式同源。
+  let width = field_storage_digits(pic)
   let bytes_needed = (width + 2) / 2
   let digits = decimal_digits(d)
   let padded = match pad_digits(digits, width) {
@@ -212,7 +221,9 @@ fn encode_binary(
   pic : PicClause,
   d : Decimal,
 ) -> Result[Unit, DecodeError] {
-  let total = field_total_digits(pic)
+  // 与布局层 pic_byte_length 的 Comp 分支同源：容量按 storage_digits
+  // （P 缩放位不占存储，binary 里存的是缩放前的系数）。
+  let total = field_storage_digits(pic)
   let width = if total <= 4 {
     1
   } else if total <= 9 {
@@ -226,7 +237,7 @@ fn encode_binary(
     return Err(
       InvalidNumeric(
         offset,
-        "COMP supports at most 18 digits, got \{field_total_digits(pic)}",
+        "COMP supports at most 18 digits, got \{total}",
       ),
     )
   }
@@ -238,7 +249,7 @@ fn encode_binary(
   let bits = width * 8
   let limit : Int64 = 1L << (bits - 1)
   let coef = d.coefficient
-  let dec_limit : Int64 = match field_total_digits(pic) {
+  let dec_limit : Int64 = match field_storage_digits(pic) {
     n => {
       let mut v : Int64 = 1
       let mut i = 0
@@ -258,7 +269,7 @@ fn encode_binary(
     return Err(
       InvalidNumeric(
         offset,
-        "value \{coef} exceeds \{field_total_digits(pic)} decimal digits (field holds at most \{dec_limit - 1})",
+        "value \{coef} exceeds \{field_storage_digits(pic)} decimal digits (field holds at most \{dec_limit - 1})",
       ),
     )
   }

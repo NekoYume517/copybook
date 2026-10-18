@@ -262,6 +262,67 @@ test "C2: 重定义视图为 Null 时不覆盖主视图字节" {
   }
 }
 
+///|
+test "R1: 尾随 P 折算为负 scale，值语义 123 → 12300" {
+  // PIC 9(3)PP：存储 3 位数字，P 是小数点右移 2 位的缩放位。
+  // COBOL 语义：存储 123 表示值 12300（值 = 系数 × 10^2）。
+  let pc = parse_pic_clause("9(3)PP", 1, 1)
+  inspect(pc.storage_digits, content="3")
+  inspect(pc.scale, content="-2")
+  let layout = compile_layout(parse_copybook("01 R.\n  05 A PIC 9(3)PP.\n"))
+  inspect(layout.byte_length, content="3")
+  // F1 F2 F3 = 存储 123 → 值 12300
+  let rec : Bytes = b"\xF1\xF2\xF3"
+  match decode_record(layout, rec) {
+    Ok(m) =>
+      match m.get("R.A") {
+        Some(Decimal(d)) => {
+          inspect(d.coefficient, content="123")
+          inspect(d.scale, content="-2")
+          inspect(d.to_string(), content="12300")
+        }
+        other => {
+          println("unexpected cell (not a Decimal)")
+          inspect(false, content="true")
+        }
+      }
+    Err(e) => {
+      println("decode failed: \{e.to_display()}")
+      inspect(false, content="true")
+    }
+  }
+}
+
+///|
+test "R1b: 前导 P 计入 scale，值语义 123 → 0.00123" {
+  // PIC PP9(3) = VPP999：小数点在最左，P 是小数点后的隐含零位。
+  // 值 = 系数 × 10^-(2+3)，存储 123 表示 0.00123。
+  let pc = parse_pic_clause("PP9(3)", 1, 1)
+  inspect(pc.storage_digits, content="3")
+  inspect(pc.scale, content="5")
+  let layout = compile_layout(parse_copybook("01 R.\n  05 A PIC PP9(3).\n"))
+  inspect(layout.byte_length, content="3")
+  let rec : Bytes = b"\xF1\xF2\xF3"
+  match decode_record(layout, rec) {
+    Ok(m) =>
+      match m.get("R.A") {
+        Some(Decimal(d)) => {
+          inspect(d.coefficient, content="123")
+          inspect(d.scale, content="5")
+          inspect(d.to_string(), content="0.00123")
+        }
+        other => {
+          println("unexpected cell (not a Decimal)")
+          inspect(false, content="true")
+        }
+      }
+    Err(e) => {
+      println("decode failed: \{e.to_display()}")
+      inspect(false, content="true")
+    }
+  }
+}
+
 // ============================================================
 // 辅助
 // ============================================================

@@ -61,8 +61,19 @@ pub fn Decimal::from_parts(coef : Int64, scale : Int32, neg : Bool) -> Decimal {
 ///     因为 COBOL 里 1.20 和 1.2 的存储宽度不同，报告应当忠实反映
 ///   - coefficient 为 0 时符号仍按 negative 输出（`-0.00`），与存储一致
 pub fn Decimal::to_string(self : Decimal) -> String {
-  let digits = self.coefficient.abs().to_string()
   let sign = if self.negative { "-" } else { "" }
+  // 负 scale（尾随 P 缩放位）：值 = 系数 × 10^|scale|，十进制右移补零。
+  // `9(3)PP` 存 123 → scale=-2 → "12300"。
+  if self.scale < 0 {
+    let sb = StringBuilder()
+    sb.write_string(sign)
+    sb.write_string(self.coefficient.abs().to_string())
+    for i = 0; i < -self.scale; i = i + 1 {
+      sb.write_char('0')
+    }
+    return sb.to_string()
+  }
+  let digits = self.coefficient.abs().to_string()
   if self.scale == 0 {
     return "\{sign}\{digits}"
   }
@@ -559,7 +570,10 @@ fn decode_field(
           }
         }
         Comp3 => {
-          let total = pic.digits + pic.scale
+          // 与布局层 pic_byte_length 同源：存储位数用 storage_digits
+          // （P 缩放位不占存储）；P 的数值语义已折进 pic.scale，
+          // 解出的系数配上该 scale 即还原真实值。
+          let total = pic.storage_digits
           match decode_packed(bytes, offset, pic.signed, pic.scale, total) {
             Ok(d) => Ok(Decimal(d))
             Err(e) => Err(e)

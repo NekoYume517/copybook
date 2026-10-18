@@ -1073,8 +1073,10 @@ pub fn parse_pic_clause(
           int_digits = int_digits + 1
         }
       'P' =>
-        // P 只能出现在两端：前面没有任何 9 → 前导缩放位；否则尾部缩放位
-        if int_digits == 0 && !after_point {
+        // P 只能出现在两端：第一个 9 之前是前导缩放位，其后是尾随缩放位。
+        // 注意 `VPP9` 这类写法：V 之后、9 之前仍是前导（小数点在最左），
+        // 所以判定依据是「是否已出现数字位」，不是 after_point。
+        if int_digits == 0 && frac_digits == 0 {
           leading_p = leading_p + 1
         } else {
           trailing_p = trailing_p + 1
@@ -1088,13 +1090,15 @@ pub fn parse_pic_clause(
     }
   }
 
-  if int_digits == 0 && frac_digits == 0 && leading_p == 0 {
+  // 至少要有一个真实数字位 9：纯 P 的 PIC（`PPP`）存储宽度为 0，没有意义。
+  if int_digits == 0 && frac_digits == 0 {
     raise SyntaxError(line, column, "PIC '\{text}' 里没有任何数字位 9")
   }
 
-  // COBOL 数字项上限 18 位（总位数 = 整数 + 小数 + 前导 P）。
+  // COBOL 数字项上限 18 位（总位数 = 整数 + 小数 + 前导/尾随 P，
+  // P 按标准计入 18 位上限但不计入存储）。
   // 超限必须拒绝：zoned/packed 解码会把系数塞进 Int64，19 位起就静默回绕。
-  let total_digits = int_digits + frac_digits + leading_p
+  let total_digits = int_digits + frac_digits + leading_p + trailing_p
   if total_digits > 18 {
     raise SyntaxError(
       line,
@@ -1103,13 +1107,30 @@ pub fn parse_pic_clause(
     )
   }
 
+  // P（缩放位）的折算 —— 唯一权威实现就在这里，下游只看 digits/scale。
+  //
+  // COBOL 标准语义：P 表示「小数点移位」，本身**不占存储**，
+  // 值 = 存储系数 × 10^(-scale)。两条规则（IBM LR, PICTURE clause: P）：
+  //   - 前导 P（`PPP999` ≡ `VPPP999`）：小数点在最左，P 与其后的全部
+  //     数字位都是小数位 → digits（整数位）= 0，
+  //     scale = leading_p + frac_digits + int_digits。
+  //   - 尾随 P（`999PPP`）：小数点右移 |k| 位 → scale = -trailing_p
+  //     （V 之后隐含；此时全部数字位都在系数里）。
+  // 存储位数恒为 storage_digits = int_digits + frac_digits：
+  // 布局层的 zoned/packed/COMP 宽度、encode/decode 读写的字节数都由它
+  // 驱动，绝不被 P 拉宽；数值语义由 Decimal 的 scale（可正可负）表达。
+  let eff_digits = if leading_p > 0 { 0 } else { int_digits }
+  let eff_scale = if trailing_p > 0 {
+    -trailing_p
+  } else {
+    frac_digits + leading_p + (if leading_p > 0 { int_digits } else { 0 })
+  }
   {
     category: Numeric,
     // digits 只表示**整数位数**（契约），总位数 = digits + scale。
-    // P 是隐含位、不占存储：前导 P 使实际小数位变多 → 计入 scale；
-    // 尾随 P 只是把值放大，存储位数不变 → 不影响 digits。
-    digits: int_digits,
-    scale: frac_digits + leading_p,
+    // 前导 P 时 digits=0、scale 增大；尾随 P 时 scale 为负。
+    digits: eff_digits,
+    scale: eff_scale,
     storage_digits: int_digits + frac_digits,
     signed,
     usage: Display,
