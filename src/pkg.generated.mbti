@@ -6,7 +6,7 @@ import {
 }
 
 // Values
-pub fn align_scale(Decimal, Int, Int) -> Result[Decimal, DecodeError]
+pub fn align_scale(Decimal, Int32, Int32) -> Result[Decimal, DecodeError]
 
 pub fn compile_layout(Array[FieldSpec]) -> RecordLayout raise ParseError
 
@@ -16,29 +16,29 @@ pub fn decode_record_ordered(RecordLayout, BytesView) -> Result[Array[CellValue]
 
 pub fn decode_record_strict(RecordLayout, BytesView) -> Result[Map[String, CellValue], DecodeError]
 
-pub fn decode_records(RecordLayout, BytesView, Int) -> Result[Array[Map[String, CellValue]], DecodeError]
+pub fn decode_records(RecordLayout, BytesView, Int32) -> Result[Array[Map[String, CellValue]], DecodeError]
 
-pub fn ebcdic_char_to_unicode(Int) -> Char
+pub fn ebcdic_char_to_unicode(Int32) -> Char
 
 pub fn ebcdic_decode(BytesView) -> String
 
 pub fn ebcdic_encode(StringView) -> Bytes
 
-pub fn ebcdic_encode_strict(StringView) -> Array[Int]?
+pub fn ebcdic_encode_strict(StringView) -> Array[Int32]?
 
-pub fn ebcdic_has_mapping(Int) -> Bool
+pub fn ebcdic_has_mapping(Int32) -> Bool
 
-pub fn ebcdic_is_printable(Int) -> Bool
+pub fn ebcdic_is_printable(Int32) -> Bool
 
-pub fn ebcdic_to_unicode(Int) -> Int
+pub fn ebcdic_to_unicode(Int32) -> Int32
 
 pub fn encode_record(RecordLayout, Map[String, CellValue]) -> Result[Bytes, DecodeError]
 
 pub fn encode_records(RecordLayout, Array[Map[String, CellValue]]) -> Result[Bytes, DecodeError]
 
-pub fn is_ebcdic_digit(Int) -> Bool
+pub fn is_ebcdic_digit(Int32) -> Bool
 
-pub fn is_ebcdic_space(Int) -> Bool
+pub fn is_ebcdic_space(Int32) -> Bool
 
 pub fn parse_copybook(StringView) -> Array[FieldSpec] raise ParseError
 
@@ -50,9 +50,9 @@ pub fn parse_copybook_with_extras(StringView) -> (Array[FieldSpec], Array[Condit
 
 pub fn parse_jsonl_row(RecordLayout, String) -> Result[Map[String, CellValue], String]
 
-pub fn parse_pic_clause(String, Int, Int) -> PicClause raise ParseError
+pub fn parse_pic_clause(String, Int32, Int32) -> PicClause raise ParseError
 
-pub fn pic_storage_len(String) -> Int
+pub fn pic_storage_len(String) -> Int32
 
 pub fn pic_type_name(PicClause) -> String
 
@@ -62,36 +62,36 @@ pub fn render_layout(RecordLayout) -> String
 
 pub fn render_table(RecordLayout, Array[Map[String, CellValue]]) -> String
 
-pub fn roundtrip_check(RecordLayout, BytesView) -> Result[Int?, DecodeError]
+pub fn roundtrip_check(RecordLayout, BytesView) -> Result[Int32?, DecodeError]
 
-pub fn token_at(Array[Token], Int) -> Token
+pub fn token_at(Array[Token], Int32) -> Token
 
 pub fn token_kinds_text(Array[Token]) -> String
 
 pub fn tokenize(StringView) -> Array[Token] raise ParseError
 
-pub fn unicode_char_to_ebcdic(Char) -> Int?
+pub fn unicode_char_to_ebcdic(Char) -> Int32?
 
-pub fn unicode_to_ebcdic(Int) -> Int?
+pub fn unicode_to_ebcdic(Int32) -> Int32?
 
 // Errors
 pub(all) suberror DecodeError {
-  RecordTooShort(Int, Int)
-  InvalidNumeric(Int, String)
-  InvalidEbcdic(Int, Int)
-  FieldOutOfBounds(String, Int, Int)
+  RecordTooShort(Int32, Int32)
+  InvalidNumeric(Int32, String)
+  InvalidEbcdic(Int32, Int32)
+  FieldOutOfBounds(String, Int32, Int32)
 } derive(@debug.Debug)
 pub fn DecodeError::to_display(Self) -> String
 
 pub(all) suberror ParseError {
-  LexError(Int, Int, String)
-  SyntaxError(Int, Int, String)
+  LexError(Int32, Int32, String)
+  SyntaxError(Int32, Int32, String)
   InvalidLayout(String)
 }
-pub fn ParseError::at(Int, Int, String) -> Self
-pub fn ParseError::column(Self) -> Int
+pub fn ParseError::at(Int32, Int32, String) -> Self
+pub fn ParseError::column(Self) -> Int32
 pub fn ParseError::invalid_layout(String) -> Self
-pub fn ParseError::line(Self) -> Int
+pub fn ParseError::line(Self) -> Int32
 pub fn ParseError::message(Self) -> String
 pub fn ParseError::to_display(Self) -> String
 
@@ -111,40 +111,40 @@ pub(all) struct ConditionName {
   name : String
   parent : String
   values : Array[String]
-  line : Int
+  line : Int32
 }
 
 pub(all) struct Decimal {
   coefficient : Int64
-  scale : Int
+  scale : Int32
   negative : Bool
 }
-pub fn Decimal::from_parts(Int64, Int, Bool) -> Self
+pub fn Decimal::from_parts(Int64, Int32, Bool) -> Self
 pub fn Decimal::to_string(Self) -> String
 
 pub(all) struct FieldLayout {
   name : String
   path : String
-  offset : Int
-  byte_length : Int
-  occurs : Int
-  total_length : Int
+  offset : Int32
+  byte_length : Int32
+  occurs : Int32
+  total_length : Int32
   pic : PicClause
-  level : Int
-  redefine_group : Int
+  level : Int32
+  redefine_group : Int32
 }
 
 pub(all) struct FieldSpec {
-  level : Int
+  level : Int32
   name : String
   pic : PicClause?
   redefines : String?
-  occurs : Int
-  occurs_min : Int
+  occurs : Int32
+  occurs_min : Int32
   occurs_depending_on : String?
   value_literal : String?
   children : Array[FieldSpec]
-  line : Int
+  line : Int32
   group_usage : Usage?
 }
 
@@ -159,8 +159,9 @@ pub fn PicCategory::name(Self) -> String
 
 pub(all) struct PicClause {
   category : PicCategory
-  digits : Int
-  scale : Int
+  digits : Int32
+  scale : Int32
+  storage_digits : Int32
   signed : Bool
   usage : Usage
   sign_separate : Bool
@@ -170,34 +171,34 @@ pub(all) struct PicClause {
 
 pub(all) struct RecordLayout {
   name : String
-  byte_length : Int
+  byte_length : Int32
   fields : Array[FieldLayout]
   all_fields : Array[FieldLayout]
 }
-pub fn RecordLayout::covered_bytes(Self) -> Int
+pub fn RecordLayout::covered_bytes(Self) -> Int32
 pub fn RecordLayout::find(Self, StringView) -> FieldLayout?
 
 pub(all) struct RenamesEntry {
   name : String
   from : String
   thru : String?
-  line : Int
+  line : Int32
 }
 
 pub(all) struct Token {
   kind : TokenKind
-  line : Int
-  column : Int
+  line : Int32
+  column : Int32
 }
 pub fn Token::describe(Self) -> String
 
 pub(all) enum TokenKind {
   Identifier(String)
-  Level(Int)
+  Level(Int32)
   PicString(String)
   PicX
   PicN
-  Number(Int)
+  Number(Int32)
   StringLiteral(String)
   LParen
   RParen

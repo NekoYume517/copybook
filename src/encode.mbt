@@ -682,7 +682,7 @@ fn encode_float_bytes(
   let raw : UInt64 = if double_precision {
     d.reinterpret_as_uint64()
   } else {
-    let bits : UInt32 = d.to_float().reinterpret_as_uint()
+    let bits : UInt32 = Float::from_double(d).reinterpret_as_uint()
     bits.to_uint64()
   }
   for i = 0; i < want; i = i + 1 {
