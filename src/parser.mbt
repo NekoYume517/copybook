@@ -710,6 +710,16 @@ fn parse_entry_clauses(
 
   // 合并 USAGE 与 SIGN SEPARATE 进 PIC 子句。
   // 优先级：显式 USAGE 子句 > PIC 里自带的（几乎总是 Display）> 默认。
+  //
+  // **无 PIC 的浮动项**（裸 `COMP-1`/`COMP-2`、`USAGE COMP-1/COMP-2`）：
+  // COBOL 标准里浮动项本就不需要 PIC 子句，USAGE 本身就决定了物理格式
+  // （4/8 字节 IEEE 754）。旧实现对 `pic == None` 一律返回 None，让
+  // `compile_field` 把这类基本项当成**零长度空组**递归 —— 字段被静默
+  // 丢弃、记录长度算错、退出码仍为 0，直接违背「拒绝静默修正」契约，
+  // 且 `pic_byte_length` 里的 `Comp1 => 4` / `Comp2 => 8` 分支因此成为
+  // 永远走不到的死代码。这里在解析期就为这种情形合成一个 Numeric 浮动
+  // PIC，让它走叶子分支、正常占字节。真正的空组项（无 PIC 且无
+  // COMP-1/2 usage）保持原样当组项处理。
   let final_pic = match pic {
     Some(pc) => {
       let u = match explicit_usage {
@@ -728,13 +738,39 @@ fn parse_entry_clauses(
         pic_text: pc.pic_text,
       })
     }
-    None => None
+    None =>
+      match explicit_usage {
+        Some(Comp1) | Some(Comp2) =>
+          Some({
+            category: Numeric,
+            digits: 0,
+            scale: 0,
+            storage_digits: 0,
+            signed: false,
+            usage: match explicit_usage {
+              Some(Comp1) => Comp1
+              _ => Comp2
+            },
+            sign_separate: false,
+            sign_leading: false,
+            pic_text: match explicit_usage {
+              Some(Comp1) => "COMP-1"
+              _ => "COMP-2"
+            },
+          })
+        _ => None
+      }
   }
 
-  // 组项上的 USAGE 单独记下来供子项继承（组项自己没有 PIC）
+  // 组项上的 USAGE 单独记下来供子项继承（组项自己没有 PIC）。
+  // 无 PIC 的浮动项已合成 PIC 走叶子分支，不再作为组项继承源。
   let group_usage = match pic {
     Some(_) => None
-    None => explicit_usage
+    None =>
+      match explicit_usage {
+        Some(Comp1) | Some(Comp2) => None
+        other => other
+      }
   }
 
   {

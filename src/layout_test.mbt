@@ -435,3 +435,45 @@ test "嵌套多层组偏移" {
   inspect(layout.find("R.MID.INNER.DEEP").unwrap().offset, content="3")
   inspect(layout.find("R.MID.AFTER").unwrap().offset, content="5")
 }
+
+///|
+// 回归：无 PIC 子句的浮动项（裸 COMP-1 / COMP-2 / USAGE 形式）是 COBOL 标准
+// 合法写法，必须按 pic_byte_length 的 Comp1=4 / Comp2=8 占字节、进 leaves。
+// 旧实现把 pic==None 的条目无条件当零长度空组，字段被静默丢弃、记录长度算错、
+// 退出码仍为 0 —— 破坏「拒绝静默修正」契约。
+test "裸 COMP-1/COMP-2 不再被当空组项静默丢弃" {
+  let specs = parse_copybook(
+    "       01  R.\n" +
+    "           05  A  COMP-1.\n" +
+    "           05  B  COMP-2.\n" +
+    "           05  C  PIC X(1).\n",
+  )
+  let layout = compile_layout(specs)
+  // 4 (COMP-1) + 8 (COMP-2) + 1 (X) = 13
+  inspect(layout.byte_length, content="13")
+  // 三个叶子都必须出现在数据面
+  let a = layout.find("R.A")
+  let b = layout.find("R.B")
+  let c = layout.find("R.C")
+  assert_true(a is Some(_))
+  assert_true(b is Some(_))
+  assert_true(c is Some(_))
+  inspect(a.unwrap().byte_length, content="4")
+  inspect(b.unwrap().byte_length, content="8")
+  inspect(a.unwrap().offset, content="0")
+  inspect(b.unwrap().offset, content="4")
+  inspect(c.unwrap().offset, content="12")
+}
+
+///|
+// 同样的 USAGE 关键字形式也必须占字节。
+test "USAGE COMP-1 形式同样不再被静默丢弃" {
+  let specs = parse_copybook(
+    "       01  R.\n" +
+    "           05  A  USAGE COMP-1.\n" +
+    "           05  C  PIC X(1).\n",
+  )
+  let layout = compile_layout(specs)
+  inspect(layout.byte_length, content="5")
+  inspect(layout.find("R.A").unwrap().byte_length, content="4")
+}
