@@ -546,7 +546,12 @@ fn parse_decimal_text(s : StringView) -> Decimal? {
       seen_dot = true
     } else if c >= '0' && c <= '9' {
       seen_digit = true
-      coef = coef * 10L + (c.to_int() - '0'.to_int()).to_int64()
+      let digit = (c.to_int() - '0'.to_int()).to_int64()
+      // Check before multiplication: a wrapped coefficient may fit a small PIC.
+      if coef > (9223372036854775807L - digit) / 10L {
+        return None
+      }
+      coef = coef * 10L + digit
       if seen_dot {
         scale = scale + 1
       }
