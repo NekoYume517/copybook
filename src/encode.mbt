@@ -729,7 +729,16 @@ fn encode_float_bytes(
   let d : Double = match v {
     Float(f) => f
     Int(i) => i.to_double()
-    Decimal(dd) => dd.coefficient.to_double() / pow10(dd.scale)
+    Decimal(dd) => {
+      // The coefficient is a magnitude; negative is the authoritative sign.
+      // Negating zero explicitly retains its floating-point sign bit.
+      let magnitude = dd.coefficient.to_double().abs() / pow10(dd.scale)
+      if dd.negative {
+        -magnitude
+      } else {
+        magnitude
+      }
+    }
     Text(s) =>
       try @string.parse_double(s) catch {
         _ =>
