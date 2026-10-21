@@ -457,6 +457,13 @@ fn decode_binary(
   for i = 0; i < n; i = i + 1 {
     raw = (raw << 8) | bytes[i].to_int().to_int64()
   }
+  if !signed && raw < 0L {
+    return Err(
+      InvalidNumeric(
+        base_offset, "unsigned COMP value exceeds supported Int64 magnitude",
+      ),
+    )
+  }
   let mut negative = false
   if signed {
     // 补码：最高位置 1 则为负

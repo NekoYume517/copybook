@@ -286,7 +286,7 @@ fn encode_binary(
   // —— 写 100 会静默改变字段的数值含义（MOVE 99 与 MOVE 100 走不同的
   // 显示路径）。zoned/packed 都按位数拒绝，COMP 不能例外。
   let bits = width * 8
-  let limit : Int64 = 1L << (bits - 1)
+  let limit : Int64 = if width < 8 { 1L << (bits - 1) } else { 0L }
   let coef = d.coefficient
   let dec_limit : Int64 = match field_storage_digits(pic) {
     n => {
@@ -335,7 +335,7 @@ fn encode_binary(
         InvalidNumeric(offset, "negative value \{coef} in unsigned COMP field"),
       )
     }
-    let ulimit : Int64 = 1L << bits
+    let ulimit : Int64 = if width < 8 { 1L << bits } else { 0L }
     if width < 8 && coef >= ulimit {
       return Err(
         InvalidNumeric(

@@ -52,3 +52,11 @@ test "IBM COMP: exact big endian bytes and following field offsets" {
     Err(_) => assert_true(false)
   }
 }
+
+///|
+test "IBM COMP: unsigned doubleword outside Int64 magnitude is rejected" {
+  let layout = compile_layout(parse_copybook("01 R.\n  05 A PIC 9(18) COMP.\n"))
+  assert_true(
+    decode_record(layout, b"\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF") is Err(_),
+  )
+}
