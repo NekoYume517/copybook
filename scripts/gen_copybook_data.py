@@ -71,13 +71,13 @@ def comp3(value: int, digits: int, scale: int, signed: bool = True) -> bytes:
 
 
 def comp(value: int, digits: int, signed: bool = True) -> bytes:
-    """二进制 COMP：n<=4 -> 1 字节, n<=9 -> 2 字节, n<=18 -> 4 字节，大端。"""
+    """二进制 COMP：n<=4 -> 2 字节, n<=9 -> 4 字节, n<=18 -> 8 字节，大端。"""
     if digits <= 4:
-        n = 1
-    elif digits <= 9:
         n = 2
-    else:
+    elif digits <= 9:
         n = 4
+    else:
+        n = 8
     return value.to_bytes(n, "big", signed=signed)
 
 

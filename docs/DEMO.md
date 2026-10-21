@@ -153,14 +153,14 @@ moon run cmd/copybook -- decode --copybook examples/customer.cpy --data examples
 ## 八、其他两份 copybook
 
 ```bash
-# OCCURS 展开：98 字节 = 10 + 3 + 5 × 17
+# OCCURS 展开：103 字节 = 10 + 3 + 5 × 18
 moon run cmd/copybook -- layout --copybook examples/order.cpy
 
 # REDEFINES：29 字节，两个字段共享 offset 14
 moon run cmd/copybook -- layout --copybook examples/redefines.cpy
 ```
 
-`order.cpy` 的关键验证点：`QTY PIC S9(4) COMP` 是 **1 字节**（n≤4 → 1），如果算成 2 字节，整条记录会变成 103 而不是 98。
+`order.cpy` 的关键验证点：`QTY PIC S9(4) COMP` 按 IBM 规则占 **2 字节**，整条记录为 103 字节。
 
 `redefines.cpy` 的关键验证点：`LIMIT-AMT` 和 `ALT-VIEW.RAW-BYTE` 都在 offset 14、各 6 字节，**不累加**。用「父组求和」的朴素实现会算出 35 而不是 29。
 
@@ -184,4 +184,4 @@ moon test
 
 ## 十、看到这里还没被说服？
 
-`docs/implementation.md` 记录了 8 个实现过程中真实踩到的算术陷阱，每一条都对应一个曾经算错的具体数字（比如 REDEFINES 算出 35、`S9(4) COMP` 算成 2 字节）。这些不是假设性问题，是实际发生并被测试锁住的。
+`docs/implementation.md` 记录了 8 个实现过程中真实踩到的算术陷阱，每一条都对应一个曾经算错的具体数字（比如 REDEFINES 算出 35、`S9(4) COMP` 曾错算成 1 字节）。这些不是假设性问题，是实际发生并被测试锁住的。

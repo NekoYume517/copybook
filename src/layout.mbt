@@ -23,7 +23,7 @@
 //   Display 文本类（X/A）：       digits
 //   Display 国家字符（N）：       digits * 2
 //   Display 数值（zoned）：       digits + scale        （符号覆盖末位，不加字节）
-//   COMP 二进制：                 <=4 → 1, <=9 → 2, <=18 → 4
+//   COMP 二进制：                 <=4 → 2, <=9 → 4, <=18 → 8
 //   COMP-3 打包：                 ceil((digits + scale + 1) / 2)
 //   SIGN SEPARATE：               +1（只对 Display 数值类）
 //
@@ -84,7 +84,7 @@ pub(all) struct RecordLayout {
 /// | N(n)             | Display | n * 2                           |
 /// | 9(n)             | Display | n        （zoned，一位一字节）   |
 /// | S9(n)            | Display | n        （符号覆盖末位）        |
-/// | 9(n)             | COMP    | n<=4→1, n<=9→2, n<=18→4         |
+/// | 9(n)             | COMP    | n<=4→2, n<=9→4, n<=18→8         |
 /// | 9(n)V9(m)        | COMP-3  | ceil((n+m+1)/2)                 |
 /// | 9(n)             | COMP-3  | ceil((n+1)/2)                   |
 /// | COMP-1 / COMP-2  | -       | 4 / 8                           |
@@ -140,19 +140,15 @@ fn pic_byte_length(pic : PicClause) -> Int32 raise ParseError {
             base
           }
         }
-        Comp =>
-          // 二进制：容量由**总位数**决定（含小数位，整个数值是一个整数）。
-          if total_digits <= 4 {
-            1
-          } else if total_digits <= 9 {
-            2
-          } else if total_digits <= 18 {
-            4
-          } else {
+        Comp => {
+          let width = comp_byte_width(total_digits)
+          if width == 0 {
             raise InvalidLayout(
-              "COMP supports at most 18 digits, got \{total_digits}",
+              "COMP supports 1..18 digits, got \{total_digits}",
             )
           }
+          width
+        }
         // 打包十进制：两个数字挤一字节，末尾半字节放符号 →
         // 需要 total_digits + 1 个半字节，向上取整到字节。
         Comp3 => (total_digits + 2) / 2
@@ -765,4 +761,18 @@ pub fn RecordLayout::covered_bytes(self : RecordLayout) -> Int32 {
     covered = covered + (cur_end - cur_start)
   }
   covered
+}
+
+///|
+/// IBM BINARY / COMP / COMP-4 storage width by decimal precision.
+fn comp_byte_width(digits : Int32) -> Int32 {
+  if digits < 1 || digits > 18 {
+    0
+  } else if digits <= 4 {
+    2
+  } else if digits <= 9 {
+    4
+  } else {
+    8
+  }
 }

@@ -191,33 +191,35 @@ test "encode packed S9(7)V99 → 5 字节" {
 }
 
 ///|
-test "encode COMP 1 字节" {
+test "encode COMP 2 字节" {
   let layout = e_num(3, 0, false, Comp)
-  expect_bytes(layout, Decimal(Decimal::from_parts(123L, 0, false)), [0x7B])
+  expect_bytes(layout, Decimal(Decimal::from_parts(123L, 0, false)), [
+    0x00, 0x7B,
+  ])
 }
 
 ///|
-test "encode COMP 2 字节正数" {
+test "encode COMP 4 字节正数" {
   let layout = e_num(5, 0, true, Comp)
   expect_bytes(layout, Decimal(Decimal::from_parts(1234L, 0, false)), [
-    0x04, 0xD2,
+    0x00, 0x00, 0x04, 0xD2,
   ])
 }
 
 ///|
-test "encode COMP 2 字节负数补码" {
+test "encode COMP 4 字节负数补码" {
   let layout = e_num(5, 0, true, Comp)
   expect_bytes(layout, Decimal(Decimal::from_parts(1234L, 0, true)), [
-    0xFB, 0x2E,
+    0xFF, 0xFF, 0xFB, 0x2E,
   ])
 }
 
 ///|
-test "encode COMP 4 字节负数 -1234567" {
+test "encode COMP 8 字节负数 -1234567" {
   let layout = e_num(8, 2, true, Comp)
-  inspect(layout.byte_length, content="4")
+  inspect(layout.byte_length, content="8")
   expect_bytes(layout, Decimal(Decimal::from_parts(1234567L, 2, true)), [
-    0xFF, 0xED, 0x29, 0x79,
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xED, 0x29, 0x79,
   ])
 }
 
@@ -386,13 +388,16 @@ test "roundtrip: COMP 各宽度" {
       let layout = e_num(digits, 0, signed, Comp)
       let width = layout.byte_length
       // 取该宽度下安全的正负值
-      let maxv : Int64 = if width == 1 {
-        127L
-      } else if width == 2 {
-        32767L
+      let maxv : Int64 = if digits == 3 {
+        999L
+      } else if digits == 5 {
+        99999L
+      } else if digits == 9 {
+        999999999L
       } else {
-        2147483647L
+        999999999999L
       }
+      ignore(width)
       for coef in [0L, 1L, maxv, maxv / 2L] {
         for neg in [false, true] {
           // COMP 是二进制补码，没有 -0：跳过这个组合（见 encode_binary 注释）
@@ -541,7 +546,7 @@ test "roundtrip: 300 条随机记录（order.cpy 结构）" {
       "01 ORDER-LINES.\n  05 ORDER-ID PIC 9(10).\n  05 LINE-COUNT PIC 9(3).\n  05 LINES OCCURS 5 TIMES.\n    10 SKU PIC X(12).\n    10 QTY PIC S9(4) COMP.\n    10 PRICE PIC S9(5)V99 COMP-3.\n",
     ),
   )
-  inspect(layout.byte_length, content="98")
+  inspect(layout.byte_length, content="103")
   let rng = Lcg::new(777UL)
   let mut mismatches = 0
   for iter = 0; iter < 300; iter = iter + 1 {
@@ -557,8 +562,8 @@ test "roundtrip: 300 条随机记录（order.cpy 结构）" {
       )
     }
     values["ORDER-LINES.LINES.SKU"] = Text(sku_chars.join(""))
-    // QTY: S9(4) COMP → 1 字节，范围 -128..127
-    let qty = (rng.below(256) - 128).to_int64()
+    // QTY: S9(4) COMP → 2 字节，PIC 范围 -9999..9999
+    let qty = (rng.below(19999) - 9999).to_int64()
     values["ORDER-LINES.LINES.QTY"] = Decimal(
       Decimal::from_parts(qty.abs(), 0, qty < 0L),
     )

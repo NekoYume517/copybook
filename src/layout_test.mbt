@@ -151,12 +151,12 @@ test "covered_bytes 覆盖整条记录" {
 ///|
 test "COMP 字节数表" {
   let cases : Array[(Int32, Int32)] = [
-    (1, 1),
-    (4, 1),
-    (5, 2),
-    (9, 2),
-    (10, 4),
-    (18, 4),
+    (1, 2),
+    (4, 2),
+    (5, 4),
+    (9, 4),
+    (10, 8),
+    (18, 8),
   ]
   for c in cases {
     let (digits, expected) = c
@@ -170,9 +170,9 @@ test "COMP 字节数表" {
 
 ///|
 test "COMP 带小数位按总位数算" {
-  // S9(5)V99 → 总 7 位 → 2 字节
+  // S9(5)V99 → 总 7 位 → 4 字节
   let specs = [group(1, "R", [leaf(5, "F", pic_numeric(5, 2, true, Comp))])]
-  inspect(compile_layout(specs).byte_length, content="2")
+  inspect(compile_layout(specs).byte_length, content="4")
 }
 
 ///|
@@ -252,19 +252,19 @@ test "OCCURS 组：total_length = 单元素 * occurs" {
     ]),
   ]
   let layout = compile_layout(specs)
-  // 单元素 = 12 + 1 + 4 = 17，× 5 = 85；10 + 3 + 85 = 98
-  inspect(layout.byte_length, content="98")
+  // 单元素 = 12 + 2 + 4 = 18，× 5 = 90；10 + 3 + 90 = 103
+  inspect(layout.byte_length, content="103")
   let lines_layout = layout.find("LINES").unwrap()
-  inspect(lines_layout.byte_length, content="17")
+  inspect(lines_layout.byte_length, content="18")
   inspect(lines_layout.occurs, content="5")
-  inspect(lines_layout.total_length, content="85")
+  inspect(lines_layout.total_length, content="90")
   // 子项偏移相对组首
   let sku = layout.find("ORDER-LINES.LINES.SKU").unwrap()
   inspect(sku.offset, content="13")
   let qty = layout.find("ORDER-LINES.LINES.QTY").unwrap()
   inspect(qty.offset, content="25")
   let price = layout.find("ORDER-LINES.LINES.PRICE").unwrap()
-  inspect(price.offset, content="26")
+  inspect(price.offset, content="27")
 }
 
 ///|

@@ -299,9 +299,9 @@ test "packed 非法数字半字节报错" {
 }
 
 ///|
-test "COMP 1 字节无符号" {
+test "COMP 2 字节无符号" {
   let layout = one_numeric(3, 0, false, Comp)
-  let v = only(layout, bs([0x7B]))
+  let v = only(layout, bs([0x00, 0x7B]))
   match v {
     Decimal(d) => inspect(d.coefficient, content="123")
     _ => fail("expected Decimal")
@@ -309,10 +309,10 @@ test "COMP 1 字节无符号" {
 }
 
 ///|
-test "COMP 2 字节大端有符号负数补码" {
+test "COMP 4 字节大端有符号负数补码" {
   let layout = one_numeric(5, 0, true, Comp)
   // -1234 = 0xFB2E
-  let v = only(layout, bs([0xFB, 0x2E]))
+  let v = only(layout, bs([0xFF, 0xFF, 0xFB, 0x2E]))
   match v {
     Decimal(d) => {
       inspect(d.coefficient, content="1234")
@@ -323,9 +323,9 @@ test "COMP 2 字节大端有符号负数补码" {
 }
 
 ///|
-test "COMP 2 字节正数" {
+test "COMP 4 字节正数" {
   let layout = one_numeric(5, 0, true, Comp)
-  let v = only(layout, bs([0x04, 0xD2]))
+  let v = only(layout, bs([0x00, 0x00, 0x04, 0xD2]))
   match v {
     Decimal(d) => {
       inspect(d.coefficient, content="1234")
@@ -336,18 +336,18 @@ test "COMP 2 字节正数" {
 }
 
 ///|
-test "COMP 总位 9 是 2 字节（S9(7)V99 不是 4 字节）" {
+test "COMP 总位 9 是 4 字节" {
   let layout = one_numeric(7, 2, true, Comp)
-  inspect(layout.byte_length, content="2")
+  inspect(layout.byte_length, content="4")
 }
 
 ///|
-test "COMP 4 字节带小数 scale（总位 10）" {
-  // S9(8)V99 → 总位 10 → 4 字节
+test "COMP 8 字节带小数 scale（总位 10）" {
+  // S9(8)V99 → 总位 10 → 8 字节
   let layout = one_numeric(8, 2, true, Comp)
-  inspect(layout.byte_length, content="4")
+  inspect(layout.byte_length, content="8")
   // 1234567 = 0x0012D687
-  let v = only(layout, bs([0x00, 0x12, 0xD6, 0x87]))
+  let v = only(layout, bs([0x00, 0x00, 0x00, 0x00, 0x00, 0x12, 0xD6, 0x87]))
   match v {
     Decimal(d) => inspect(d.to_string(), content="12345.67")
     _ => fail("expected Decimal")
@@ -355,10 +355,10 @@ test "COMP 4 字节带小数 scale（总位 10）" {
 }
 
 ///|
-test "COMP 4 字节负数 -1234567" {
+test "COMP 8 字节负数 -1234567" {
   let layout = one_numeric(8, 2, true, Comp)
   // -1234567 补码 = 0xFFED2979
-  let v = only(layout, bs([0xFF, 0xED, 0x29, 0x79]))
+  let v = only(layout, bs([0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xED, 0x29, 0x79]))
   match v {
     Decimal(d) => {
       inspect(d.coefficient, content="1234567")

@@ -281,23 +281,15 @@ fn encode_binary(
   // 与布局层 pic_byte_length 的 Comp 分支同源：容量按 storage_digits
   // （P 缩放位不占存储，binary 里存的是缩放前的系数）。
   let total = field_storage_digits(pic)
-  let width = if total <= 4 {
-    1
-  } else if total <= 9 {
-    2
-  } else if total <= 18 {
-    4
-  } else {
-    0
-  }
+  let width = comp_byte_width(total)
   if width == 0 {
     return Err(
       InvalidNumeric(offset, "COMP supports at most 18 digits, got \{total}"),
     )
   }
   // 容量检查：n 字节有符号能表示 -2^(8n-1) .. 2^(8n-1)-1。
-  // **十进制位数也必须校验**（C8）：`PIC S9(2) COMP` 只占 1 字节，二进制
-  // 容量 -128..127 足够装 100，但 COBOL 的字段语义是「最多 2 位十进制数」
+  // **十进制位数也必须校验**（C8）：`PIC S9(2) COMP` 占 2 字节，二进制
+  // 容量 -32768..32767 足够装 100，但 COBOL 的字段语义是「最多 2 位十进制数」
   // —— 写 100 会静默改变字段的数值含义（MOVE 99 与 MOVE 100 走不同的
   // 显示路径）。zoned/packed 都按位数拒绝，COMP 不能例外。
   let bits = width * 8
@@ -328,7 +320,7 @@ fn encode_binary(
     )
   }
   if pic.signed {
-    if d.negative && coef > limit {
+    if width < 8 && d.negative && coef > limit {
       return Err(
         InvalidNumeric(
           offset,
@@ -336,7 +328,7 @@ fn encode_binary(
         ),
       )
     }
-    if !d.negative && coef >= limit {
+    if width < 8 && !d.negative && coef >= limit {
       return Err(
         InvalidNumeric(
           offset,
@@ -351,7 +343,7 @@ fn encode_binary(
       )
     }
     let ulimit : Int64 = 1L << bits
-    if coef >= ulimit {
+    if width < 8 && coef >= ulimit {
       return Err(
         InvalidNumeric(
           offset,

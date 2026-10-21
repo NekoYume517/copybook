@@ -157,7 +157,7 @@ pub fn RecordLayout::covered_bytes(self : RecordLayout) -> Int
 | `X(n)` / `A(n)` | Display | n |
 | `9(n)` | Display (zoned) | n |
 | `S9(n)` | Display | n（符号覆盖末位，**不加字节**） |
-| `9(n)` | COMP | n≤4 → 1；n≤9 → 2；n≤18 → 4 |
+| `9(n)` | COMP | n≤4 → 2；n≤9 → 4；n≤18 → 8 |
 | `S9(n)` | COMP | 同上（**符号不额外占字节**） |
 | `9(n)` | COMP-3 (无符号) | ceil((n + 1) / 2) |
 | `S9(n)V9(m)` | COMP-3 | ceil((n + m + 1) / 2) |
@@ -177,16 +177,16 @@ FLAGS.ACTIVE    offset 51  len  1
 FLAGS.TIER      offset 52  len  2
 ```
 
-`order.cpy` → **总长 98 字节**
+`order.cpy` → **总长 103 字节**
 
 ```
 ORDER-ID        offset  0  len 10
 LINE-COUNT      offset 10  len  3
-LINES × 5       offset 13  每条 17 字节 = 85
+LINES × 5       offset 13  每条 18 字节 = 90
     SKU         len 12
-    QTY         len  1     (S9(4) COMP → n≤4 → 1 字节，不是 2！)
+    QTY         len  2     (S9(4) COMP → IBM halfword，2 字节)
     PRICE       len  4     (S9(5)V99 COMP-3 → ceil((5+2+1)/2)=4)
-TOTAL = 10 + 3 + 85 = 98
+TOTAL = 10 + 3 + 90 = 103
 ```
 
 `redefines.cpy` → `LIMIT-AMT` (S9(9)V99 COMP-3 = 6 字节) 与 `ALT-VIEW` 的 `RAW-BYTE` X(6)

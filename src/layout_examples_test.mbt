@@ -26,11 +26,11 @@ test "examples/order.cpy 端到端布局" {
   let src = "\n01  ORDER-LINES.\n    05  ORDER-ID       PIC 9(10).\n    05  LINE-COUNT     PIC 9(3).\n    05  LINES OCCURS 5 TIMES.\n        10  SKU        PIC X(12).\n        10  QTY        PIC S9(4) COMP.\n        10  PRICE      PIC S9(5)V99 COMP-3.\n"
   let layout = compile_layout(parse_copybook(src))
   inspect(layout.name, content="ORDER-LINES")
-  inspect(layout.byte_length, content="98")
+  inspect(layout.byte_length, content="103")
   let lines = layout.find("LINES").unwrap()
-  inspect(lines.byte_length, content="17")
+  inspect(lines.byte_length, content="18")
   inspect(lines.occurs, content="5")
-  inspect(lines.total_length, content="85")
+  inspect(lines.total_length, content="90")
 }
 
 ///|
