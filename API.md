@@ -224,7 +224,7 @@ pub(all) struct Decimal {
   scale : Int              // 小数位数
   negative : Bool
   sign_nibble : Int?       // decode 读到的符号半字节（C/D/F），用于字节保真
-  pad_nibble : Int?        // decode 读到的 packed 填充半字节（0/F）
+  pad_nibble : Int?        // decode 读到的 packed 前导填充半字节（仅允许 0）
 }
 
 pub fn Decimal::to_string(self : Decimal) -> String

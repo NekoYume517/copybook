@@ -59,7 +59,7 @@ def comp3(value: int, digits: int, scale: int, signed: bool = True) -> bytes:
     s = f"{abs(value):0{total_digits}d}"
     # 转成半字节流
     nibbles = [int(ch) for ch in s]
-    sign = 0xD if value < 0 else 0xC  # 0xF 表示无符号
+    sign = 0xD if value < 0 else (0xC if signed else 0xF)
     nibbles.append(sign)
     if len(nibbles) % 2:
         nibbles.insert(0, 0)

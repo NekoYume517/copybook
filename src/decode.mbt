@@ -48,7 +48,7 @@
 /// | 1234 | `01 23 4F` | 正号 F（IBM 对无符号字段写的，也被接受） |
 /// | 1234 | `01 23 4D`？ | 否 —— D 是负号 |
 /// | -1234 | `01 23 4D` | 负号 D（唯一写法） |
-/// | 1234 | `12 34 0C` / `12 34 0F` | 4 位数字 + 填充 0 |
+/// | 1234 | `01 23 4C` / `01 23 4F` | 4 位数字 + 填充 0 |
 ///
 /// 若 decode 只留下"值是 1234、符号为正"，encode 就只能按**自己的偏好**
 /// 写一个字节——原始记录里的 `F` 会被改成 `C`。数值对了，**字节不对**，
@@ -64,7 +64,7 @@ pub(all) struct Decimal {
   /// decode 读到的符号半字节（packed 的低半字节 / zoned 的高半字节）。
   /// 取值 C/D/F；`None` 表示没有原始信息，encode 用默认写法。
   sign_nibble : Int32?
-  /// decode 读到的末字节填充半字节（仅 packed，0 或 F）。
+  /// decode 读到的最左填充半字节（仅偶数位 packed，必须为 0）。
   pad_nibble : Int32?
 }
 
@@ -374,11 +374,10 @@ fn decode_zoned(
 /// 解码 packed decimal（COMP-3）。
 ///
 /// 布局：`[d1 d2] [d3 d4] ... [dn sign]`，**末字节低半字节是符号**。
-///   `12 34 5D` → -12345（6 位数字，5 字节）
+///   `12 34 5D` → -12345（5 位数字，3 字节）
 ///
-/// 总数位 = digits + scale。奇偶决定末字节是否半空：
-///   total_digits 奇数 → 末字节高半字节是最后一个数字
-///   total_digits 偶数 → 末字节高半字节是**填充 0**（本实现接受 0 或 F）
+/// 总数位 = storage_digits。末字节高半字节恒为最后一位数字。
+/// 偶数位数时，最左半字节必须填充 0；奇数位数没有填充。
 fn decode_packed(
   bytes : BytesView,
   base_offset : Int32,
@@ -387,87 +386,57 @@ fn decode_packed(
   total_digits : Int32,
 ) -> Result[Decimal, DecodeError] {
   let n = bytes.length()
-  if n == 0 {
-    return Err(InvalidNumeric(base_offset, "empty packed decimal field"))
+  if n == 0 || n != (total_digits + 2) / 2 {
+    return Err(InvalidNumeric(base_offset, "invalid packed decimal width"))
   }
-  let mut coef : Int64 = 0
-  let mut digit_count = 0
-  for i = 0; i < n; i = i + 1 {
-    let b = bytes[i].to_int()
-    let hi = (b >> 4) & 0xF
-    let lo = b & 0xF
-    if i == n - 1 {
-      // 末字节：高半字节是最后一位数字（或填充），低半字节是符号
-      if digit_count < total_digits {
-        if hi > 9 {
-          return Err(
-            InvalidNumeric(
-              base_offset + i,
-              "packed high nibble is 0x\{hex_digit(hi)}, expected 0..9 (byte 0x\{hex2(b)})",
-            ),
-          )
-        }
-        coef = coef * 10L + hi.to_int64()
-        digit_count = digit_count + 1
-      } else if hi != 0x0 && hi != 0xF {
-        // 数字已满，高半字节必须是填充
-        return Err(
-          InvalidNumeric(
-            base_offset + i,
-            "packed pad nibble is 0x\{hex_digit(hi)}, expected 0 or F (byte 0x\{hex2(b)})",
-          ),
-        )
-      }
-      let neg = match lo {
-        0xC | 0xF => false
-        0xD => true
-        _ =>
-          return Err(
-            InvalidNumeric(
-              base_offset + i,
-              "packed sign nibble is 0x\{hex_digit(lo)}, expected C/D/F (byte 0x\{hex2(b)})",
-            ),
-          )
-      }
-      if !signed && neg {
-        return Err(
-          InvalidNumeric(
-            base_offset + i,
-            "unsigned packed decimal has negative sign (byte 0x\{hex2(b)})",
-          ),
-        )
-      }
-      // 保留实际读到的符号半字节与填充半字节：0xC 与 0xF 都表示正号，
-      // 但字节不同，encode 必须原样写回才能逐字节往返（见 Decimal 文档表）。
-      let pad = if digit_count < total_digits || hi == 0x0 || hi == 0xF {
-        Some(hi)
+  let has_pad = total_digits % 2 == 0
+  if has_pad && bytes[0].to_int() >> 4 != 0 {
+    return Err(
+      InvalidNumeric(base_offset, "packed leading pad nibble must be zero"),
+    )
+  }
+  let mut coef : Int64 = 0L
+  let first_digit = if has_pad { 1 } else { 0 }
+  for k = first_digit; k < n * 2 - 1; k = k + 1 {
+    let byte = bytes[k / 2].to_int()
+    let digit = if k % 2 == 0 { byte >> 4 } else { byte & 0xF }
+    if digit > 9 {
+      return Err(
+        InvalidNumeric(base_offset + k / 2, "packed digit nibble must be 0..9"),
+      )
+    }
+    coef = coef * 10L + digit.to_int64()
+  }
+  let sign = bytes[n - 1].to_int() & 0xF
+  let negative = match sign {
+    0xC | 0xF => false
+    0xD => true
+    _ =>
+      return Err(
+        InvalidNumeric(base_offset + n - 1, "packed sign nibble must be C/D/F"),
+      )
+  }
+  if !signed && negative {
+    return Err(
+      InvalidNumeric(
+        base_offset + n - 1,
+        "unsigned packed decimal has negative sign",
+      ),
+    )
+  }
+  Ok(
+    decimal_with_nibbles(
+      coef,
+      scale,
+      negative,
+      Some(sign),
+      if has_pad {
+        Some(0)
       } else {
         None
-      }
-      return Ok(decimal_with_nibbles(coef, scale, neg, Some(lo), pad))
-    }
-    // 非末字节：两半都是数字
-    if hi > 9 {
-      return Err(
-        InvalidNumeric(
-          base_offset + i,
-          "packed high nibble is 0x\{hex_digit(hi)}, expected 0..9 (byte 0x\{hex2(b)})",
-        ),
-      )
-    }
-    if lo > 9 {
-      return Err(
-        InvalidNumeric(
-          base_offset + i,
-          "packed low nibble is 0x\{hex_digit(lo)}, expected 0..9 (byte 0x\{hex2(b)})",
-        ),
-      )
-    }
-    coef = coef * 100L + hi.to_int64() * 10L + lo.to_int64()
-    digit_count = digit_count + 2
-  }
-  // 循环里末字节一定 return，走到这里说明 n == 0（上面已拦）
-  Err(InvalidNumeric(base_offset, "malformed packed decimal"))
+      },
+    ),
+  )
 }
 
 ///|

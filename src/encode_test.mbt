@@ -174,10 +174,10 @@ test "encode packed -123 → 12 3D" {
 
 ///|
 test "encode packed 偶数位填充 0" {
-  // 4 位 + 符号 = 5 半字节 → 3 字节，末字节高半字节 0
+  // 4 位 + 符号 = 5 半字节 → 3 字节，最左半字节填充 0
   let layout = e_num(4, 0, true, Comp3)
   expect_bytes(layout, Decimal(Decimal::from_parts(1234L, 0, false)), [
-    0x12, 0x34, 0x0C,
+    0x01, 0x23, 0x4C,
   ])
 }
 

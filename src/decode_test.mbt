@@ -256,10 +256,10 @@ test "packed S9(7)V99 → 5 字节，值 -123456789" {
 
 ///|
 test "packed 偶数位数以 0 填充高半字节" {
-  // digits=4 scale=0 signed → 5 半字节 → 3 字节，末字节高半字节填充
+  // digits=4 scale=0 signed → 5 半字节 → 3 字节，最左半字节填充
   let layout = one_numeric(4, 0, true, Comp3)
   inspect(layout.byte_length, content="3")
-  let v = only(layout, bs([0x12, 0x34, 0x0C]))
+  let v = only(layout, bs([0x01, 0x23, 0x4C]))
   match v {
     Decimal(d) => inspect(d.coefficient, content="1234")
     _ => fail("expected Decimal")
@@ -267,13 +267,9 @@ test "packed 偶数位数以 0 填充高半字节" {
 }
 
 ///|
-test "packed F 填充也接受" {
+test "packed 非零前导填充拒绝" {
   let layout = one_numeric(4, 0, true, Comp3)
-  let v = only(layout, bs([0x12, 0x34, 0xFC]))
-  match v {
-    Decimal(d) => inspect(d.coefficient, content="1234")
-    _ => fail("expected Decimal")
-  }
+  assert_true(decode_record_ordered(layout, bs([0xF1, 0x23, 0x4C])) is Err(_))
 }
 
 ///|

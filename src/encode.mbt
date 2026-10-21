@@ -10,8 +10,8 @@
 //    也是绝大多数真实数据的形态。因此「0xC 开头的正数」解码后编码会变成 0xF，
 //    这类输入在往返测试里必须排除（它不是标准形态）。
 //
-// 2. **packed 的填位**：total_digits 为偶数时末字节高半字节是填充。
-//    解码接受 0x0 与 0xF，编码一律写 0x0。
+// 2. **packed 的填位**：total_digits 为偶数时最左半字节填充 0。
+//    解码拒绝非零填充，编码固定写 0。
 //
 // 3. **文本的尾部填充**：编码到固定宽度，不足补 0x40（EBCDIC 空格）。
 //    解码时 trim 掉的就是这些 0x40，所以往返成立。
@@ -178,7 +178,7 @@ fn encode_zoned(
 /// 布局：每字节两个数字，末字节低半字节是符号。
 ///   123  → `12 3C`
 ///   -123 → `12 3D`
-///   1234 → `12 34 0C`（末字节高半字节填充 0）
+///   1234 → `01 23 4C`（最左半字节填充 0）
 fn encode_packed(
   w : Writer,
   offset : Int32,
@@ -234,36 +234,29 @@ fn encode_packed(
     }
     None => default_sign
   }
-  // 数字串 + 符号半字节，按半字节流写出。
-  //
-  // 末字节的高半字节可能是**填充**（数字位数为奇数时）：合法写法有 0x0 和 0xF
-  // 两种（`12 3C` 与 `F2 3C` 都表示 123）。默认写 0；若该值来自字节解码，
-  // 沿用原始填充半字节以保真。
-  let pad_hi = match d.pad_nibble {
-    Some(p) => if p == 0x0 || p == 0xF { p } else { 0 }
-    None => 0
+  // IBM packed decimal is right-aligned: optional leading zero, digits, sign.
+  match d.pad_nibble {
+    Some(n) =>
+      if n != 0 {
+        return Err(
+          InvalidNumeric(offset, "packed leading pad nibble must be zero"),
+        )
+      }
+    None => ()
   }
-  let mut digit_index = 0
+  let has_pad = width % 2 == 0
   for i = 0; i < bytes_needed; i = i + 1 {
-    let is_last = i == bytes_needed - 1
-    let hi = if digit_index < width {
-      let v = padded[digit_index].to_int() - '0'.to_int()
-      digit_index = digit_index + 1
-      v
-    } else if is_last {
-      // 数字已排完，末字节高半字节是填充
-      pad_hi
-    } else {
+    let hi_index = i * 2 - (if has_pad { 1 } else { 0 })
+    let hi = if hi_index < 0 {
       0
+    } else {
+      padded[hi_index].to_int() - '0'.to_int()
     }
-    let lo = if is_last {
+    let lo_index = hi_index + 1
+    let lo = if i == bytes_needed - 1 {
       sign_nibble
-    } else if digit_index < width {
-      let v = padded[digit_index].to_int() - '0'.to_int()
-      digit_index = digit_index + 1
-      v
     } else {
-      0
+      padded[lo_index].to_int() - '0'.to_int()
     }
     w.set(offset + i, (hi << 4) | lo)
   }

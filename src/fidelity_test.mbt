@@ -13,8 +13,8 @@
 // 本项目保留的信息有两类：
 //   1. 符号半字节  `sign_nibble`：packed 的末字节低半字节 / zoned 的符号位
 //      —— 0xC 与 0xF 都是正号，0xD 是负号
-//   2. packed 填充半字节 `pad_nibble`：数字位数为奇数时末字节高半字节
-//      —— 0x0 与 0xF 都合法
+//   2. packed 填充半字节 `pad_nibble`：数字位数为偶数时最左半字节
+//      —— IBM 格式只允许 0x0
 //
 // 两条路径各有测试：
 //   · **有字节来源**（decode 出来的值）→ 必须逐字节还原，见下面各 test
@@ -114,8 +114,7 @@ test "fidelity: 无符号 COMP-3 的 0xF 与 0xC 都能读且各自还原" {
 }
 
 ///|
-// filled nibble：3 位数字占 2 字节时，末字节高半字节是**填充**。
-// 0x0 和 0xF 都合法；`12 3C` 是 123，`F2 3C` 也是 123。
+// 奇数位 packed 没有填充，每一个符号前半字节都是数字。
 test "fidelity: COMP-3 符号半字节在末字节低 4 位（S9(5) 满容量）" {
   // S9(5) → 5 数字 + 符号 = 6 半字节 = 3 字节，**没有填充位**，
   // 是观察符号半字节最干净的形状。
@@ -154,27 +153,25 @@ test "fidelity: COMP-3 符号半字节在末字节低 4 位（S9(5) 满容量）
 }
 
 // ---------------------------------------------------------------------------
-// 1b. 同一数值的三种合法字节写法（驳回意见明确要求的那组案例）
+// 1b. 同一数值的两种合法字节写法（驳回意见明确要求的那组案例）
 // ---------------------------------------------------------------------------
 
 ///|
 // `PIC 9(4) COMP-3` = 3 字节 = 5 个数字位 + 1 个符号位，声明只用 4 位数字，
-// 所以末字节高半字节是**填充**。于是同一个 1234 有三种合法写法：
+// 所以最左半字节是**填充零**。于是同一个 1234 有两种合法写法：
 //
-//   `12 34 0C`  填充 0 + 正号 C
-//   `12 34 FC`  填充 F + 正号 C
-//   `12 34 0F`  填充 0 + 正号 F
+//   `01 23 4C`  前导填充 0 + 正号 C
+//   `01 23 4F`  前导填充 0 + 正号 F
 //
-// 三种写法**数值都是 1234**，字节互不相同。逐字节往返要求各自还原成自己，
+// 两种写法**数值都是 1234**，字节互不相同。逐字节往返要求各自还原成自己，
 // 不能统一成某一种。
-test "fidelity: 同一数值 1234 的三种合法 COMP-3 字节写法各自还原" {
+test "fidelity: 同一数值 1234 的两种合法 COMP-3 字节写法各自还原" {
   let layout = compile_layout(
     parse_copybook("01 R.\n  05 V PIC 9(4) COMP-3.\n"),
   )
   let cases : Array[(Bytes, Int32, Int32)] = [
-    (b"\x12\x34\x0C", 0x0, 0xC),
-    (b"\x12\x34\xFC", 0xF, 0xC),
-    (b"\x12\x34\x0F", 0x0, 0xF),
+    (b"\x01\x23\x4C", 0x0, 0xC),
+    (b"\x01\x23\x4F", 0x0, 0xF),
   ]
   for c in cases {
     let (rec, want_pad, want_sign) = c
@@ -198,15 +195,15 @@ test "fidelity: 同一数值 1234 的三种合法 COMP-3 字节写法各自还�
 }
 
 // ---------------------------------------------------------------------------
-// 1c. 负号与填充的组合：同一个 -1234 也只有 0xD 一种符号，但填充仍两种
+// 1c. 负号与填充的组合：同一个 -1234 也只有 0xD 一种符号，填充始终为前导零
 // ---------------------------------------------------------------------------
 
 ///|
-test "fidelity: 负数 -1234 的填充半字节 0 与 F 各自还原" {
+test "fidelity: 负数 -1234 的前导填充零逐字节还原" {
   let layout = compile_layout(
     parse_copybook("01 R.\n  05 V PIC S9(4) COMP-3.\n"),
   )
-  for rec in [(b"\x12\x34\x0D", 0x0), (b"\x12\x34\xFD", 0xF)] {
+  for rec in [(b"\x01\x23\x4D", 0x0)] {
     let (bytes, want_pad) = rec
     let m = decode_record(layout, bytes).unwrap()
     match m.get("R.V") {
@@ -401,7 +398,7 @@ test "fidelity: HFP 的 +0 与 -0 符号位不同且各自还原" {
 ///|
 // `verify` 走内存内 decode→encode，不经过 JSON。但真实工作流往往要
 // 「导出成 JSONL、编辑、再导回」—— 这条路径上 JSON 数字没有地方放符号
-// 半字节，若不单独携带，`12 34 FC` 会被重编码成 `12 34 0C`。
+// 半字节，若不单独携带，`01 23 4F` 会被重编码成 `01 23 4C`。
 //
 // 本测试锁定旁路键 `__nibbles` 的存在与效果。
 test "fidelity: decode → JSONL → encode 三者之后仍逐字节一致" {
@@ -410,9 +407,9 @@ test "fidelity: decode → JSONL → encode 三者之后仍逐字节一致" {
       "01 R.\n" + "  05 PK PIC S9(4) COMP-3.\n" + "  05 ZN PIC S9(3).\n",
     ),
   )
-  // PK: 1234 带填充 F + 正号 C（非默认写法）
+  // PK: 1234 带前导零 + 正号 F（有符号字段的非默认写法）
   // ZN: 123 带正号 C（区别于默认的 F）
-  let original : Bytes = b"\x12\x34\xFC\xF1\xF2\xC3"
+  let original : Bytes = b"\x01\x23\x4F\xF1\xF2\xC3"
   let decoded = decode_record(layout, original).unwrap()
   let jsonl = render_jsonl(layout, [decoded])
   assert_true(jsonl.contains("__nibbles"))
