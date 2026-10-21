@@ -610,10 +610,10 @@ test "C10: 前导 P 不占存储" {
 }
 
 ///|
-test "C11: PIC N 的填充字节是 EBCDIC 空格，标准数据逐字节往返" {
+test "C11: PIC N 使用 UTF-16BE，标准数据逐字节往返" {
   let layout = compile_layout(parse_copybook("01 R.\n  05 A PIC N(2).\n"))
-  // 标准工具生成的 N 字段填充是 0x40（旧实现写 0x00）
-  let rec : Bytes = b"\xC1\x40\xC2\x40"
+  // A 后跟国家字符空格 U+0020，均为 UTF-16BE。
+  let rec : Bytes = b"\x00\x41\x00\x20"
   match roundtrip_check(layout, rec) {
     Ok(None) => inspect(true, content="true")
     Ok(Some(off)) => {

@@ -97,7 +97,7 @@ fn pic_byte_length(pic : PicClause) -> Int32 raise ParseError {
   let total_digits = pic.storage_digits
   match pic.category {
     National => {
-      // 国家字符（UTF-16）在 EBCDIC 记录里是双字节，n 个字符 → 2n 字节。
+      // NATIONAL 是 UTF-16BE，PIC N(n) 分配 n 个码元，即 2n 字节。
       guard pic.scale == 0 else {
         raise InvalidLayout("PIC N: scale must be 0, got scale=\{pic.scale}")
       }

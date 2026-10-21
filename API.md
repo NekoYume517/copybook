@@ -161,7 +161,7 @@ pub fn RecordLayout::covered_bytes(self : RecordLayout) -> Int
 | `S9(n)` | COMP | 同上（**符号不额外占字节**） |
 | `9(n)` | COMP-3 (无符号) | ceil((n + 1) / 2) |
 | `S9(n)V9(m)` | COMP-3 | ceil((n + m + 1) / 2) |
-| `N(n)` | Display | n * 2 |
+| `N(n)` | NATIONAL (UTF-16BE) | n * 2（n 个 UTF-16 码元） |
 | 任意 | `SIGN ... SEPARATE` | +1 |
 
 **权威布局答案（已用 Python 交叉核对，测试必须匹配）：**
@@ -263,7 +263,8 @@ pub fn decode_record_strict(layout : RecordLayout, record : BytesView) -> Result
   同一个 `1.5` 在 HFP 下是 `41 18 00 00`、在 IEEE 下是 `3F C0 00 00`。
   解码为 `CellValue::Float`。用 `compile_layout_with_float_mode` 或 CLI `--float-mode`
   指定；默认 `Hfp`（有测试锁定），不允许"猜"。
-- 文本字段：EBCDIC 解码后 `trim_end` 空格（0x40）。
+- X/A 文本字段：EBCDIC 解码后 `trim_end` 空格（0x40）。
+- NATIONAL：UTF-16BE；`PIC N(n)` 容纳 n 个 UTF-16 码元，补充平面字符占两个码元。尾部 U+0020 是填充，编码不足部分写 `00 20`。非法代理项报带绝对字节偏移的 `InvalidNumeric`，不替换字符。
 - P 缩放位（`PIC PP9(3)` / `PIC 9(3)PP`）不占存储：存储宽度按
   `storage_digits`；数值语义折算进 `scale`（前导 P 增大 scale，
   尾随 P 使 scale 为负）。值 = coefficient × 10^(-scale)。

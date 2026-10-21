@@ -608,33 +608,41 @@ fn encode_field(
   }
   match pic.category {
     National => {
-      // 双字节：第 1 字节 EBCDIC 字符，第 2 字节 0x00
-      let s = as_text(v)
-      if s.length() > pic.digits {
+      // NATIONAL is UTF-16BE; PIC N counts UTF-16 code units, not scalar values.
+      let text = as_text(v)
+      if text.length() > pic.digits {
         return Err(
-          InvalidNumeric(
-            offset,
-            "text length \{s.length()} exceeds N(\{pic.digits})",
-          ),
+          InvalidNumeric(offset, "text exceeds NATIONAL code-unit capacity"),
         )
       }
-      let codes = match ebcdic_encode_strict(s) {
-        Some(c) => c
-        None =>
+      let mut i = 0
+      while i < text.length() {
+        let unit = text[i].to_int()
+        if unit >= 0xD800 && unit <= 0xDBFF {
+          if i + 1 >= text.length() {
+            return Err(
+              InvalidNumeric(offset + i * 2, "unpaired UTF-16 high surrogate"),
+            )
+          }
+          let low = text[i + 1].to_int()
+          if low < 0xDC00 || low > 0xDFFF {
+            return Err(
+              InvalidNumeric(offset + i * 2, "invalid UTF-16 surrogate pair"),
+            )
+          }
+          i = i + 2
+        } else if unit >= 0xDC00 && unit <= 0xDFFF {
           return Err(
-            InvalidNumeric(offset, "text not representable in cp037 EBCDIC"),
+            InvalidNumeric(offset + i * 2, "unpaired UTF-16 low surrogate"),
           )
+        } else {
+          i = i + 1
+        }
       }
       for i = 0; i < pic.digits; i = i + 1 {
-        if i < codes.length() {
-          w.set(offset + i * 2, codes[i])
-        } else {
-          w.set(offset + i * 2, 0x40)
-        }
-        // 第二字节写 EBCDIC 空格 0x40（C11）：decode 接受 0x00 或 0x40，
-        // 但 0x00 不是合法 EBCDIC —— 标准工具生成的 N 字段填充是空格。
-        // 写 0x40 让标准数据逐字节往返；decode 的宽容接受保持不变。
-        w.set(offset + i * 2 + 1, 0x40)
+        let unit = if i < text.length() { text[i].to_int() } else { 0x20 }
+        w.set(offset + i * 2, unit >> 8)
+        w.set(offset + i * 2 + 1, unit & 0xFF)
       }
       Ok(())
     }

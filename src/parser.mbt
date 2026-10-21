@@ -55,7 +55,7 @@ pub(all) enum PicCategory {
   Numeric // PIC 9(...) / S9(...) / V / P
   Alphabetic // PIC A(...)
   Alphanumeric // PIC X(...)
-  National // PIC N(...)，UTF-16，每字符 2 字节
+  National // PIC N(...)，UTF-16BE，每码元 2 字节
   Edited // 含 Z * $ , . + - CR DB / B 0 的编辑型
 }
 

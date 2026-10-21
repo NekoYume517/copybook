@@ -158,7 +158,7 @@ copybook decode --copybook app.cpy --data app.dat --float-mode ieee
 | `PIC 9(n)` 数字（zoned decimal） | ✅ |
 | `PIC S9(n)` 带符号 | ✅ |
 | `PIC X(n)` / `A(n)` 字符 | ✅ |
-| `PIC N(n)` 国家字符 | ✅ |
+| `PIC N(n)` 国家字符 | ✅ UTF-16BE，n 为码元数，空位补 U+0020 |
 | `PIC S9(n)V9(m)` 隐含小数 | ✅ |
 | `COMP` / `COMP-4` 二进制 | ✅ |
 | `COMP-3` 打包十进制 | ✅ |

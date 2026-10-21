@@ -16,7 +16,7 @@
 //    例：`S9(3)` 的 -123 是 `12 3D`（2 字节）。
 //
 // 3. **binary**（COMP / COMP-4 / BINARY）
-//    大端定长整数（1/2/4 字节），有符号用补码。隐含小数由 scale 表达。
+//    大端定长整数（2/4/8 字节），有符号用补码。隐含小数由 scale 表达。
 //
 // 4. **浮点**（COMP-1 / COMP-2）
 //    4 / 8 字节 IEEE 754 大端。
@@ -573,29 +573,43 @@ fn decode_field(
   let pic = field.pic
   match pic.category {
     National => {
-      // 国家字符：每字符 2 字节。本子集按"每个 2 字节对是一个 EBCDIC 字符 + 填充"
-      // 处理 —— 取每对的第 1 字节做文本解码，第 2 字节必须是 0x00 或空格。
+      if length % 2 != 0 {
+        return Err(InvalidNumeric(offset, "NATIONAL byte length must be even"))
+      }
       let out = StringBuilder()
       let mut i = 0
-      while i + 1 < length {
-        let hi = bytes[i].to_int()
-        let lo = bytes[i + 1].to_int()
-        if !ebcdic_is_printable(hi) {
-          return Err(InvalidEbcdic(offset + i, hi))
+      while i < length {
+        let unit = (bytes[i].to_int() << 8) | bytes[i + 1].to_int()
+        if unit >= 0xD800 && unit <= 0xDBFF {
+          if i + 3 >= length {
+            return Err(
+              InvalidNumeric(offset + i, "truncated UTF-16BE surrogate pair"),
+            )
+          }
+          let low = (bytes[i + 2].to_int() << 8) | bytes[i + 3].to_int()
+          if low < 0xDC00 || low > 0xDFFF {
+            return Err(
+              InvalidNumeric(offset + i, "invalid UTF-16BE surrogate pair"),
+            )
+          }
+          let scalar = 0x10000 + ((unit - 0xD800) << 10) + low - 0xDC00
+          out.write_char(scalar.unsafe_to_char())
+          i = i + 4
+        } else if unit >= 0xDC00 && unit <= 0xDFFF {
+          return Err(
+            InvalidNumeric(offset + i, "unpaired UTF-16BE low surrogate"),
+          )
+        } else {
+          out.write_char(unit.unsafe_to_char())
+          i = i + 2
         }
-        if lo != 0x00 && lo != 0x40 {
-          return Err(InvalidEbcdic(offset + i + 1, lo))
-        }
-        out.write_char(ebcdic_char_to_unicode(hi))
-        i = i + 2
       }
-      let s = out.to_string()
-      // trim_end 空格
-      let mut end = s.length()
-      while end > 0 && s[end - 1] == ' ' {
+      let text = out.to_string()
+      let mut end = text.length()
+      while end > 0 && text[end - 1] == ' ' {
         end = end - 1
       }
-      Ok(Text(s[:end].to_owned()))
+      Ok(Text(text[:end].to_owned()))
     }
     // 编辑型在存储层是**显示字符**，与 X(n) 一样按文本读。
     Edited | Alphanumeric | Alphabetic =>
