@@ -97,6 +97,48 @@ pub fn render_jsonl(
       }
       obj[field.path] = cell_to_json(v)
     }
+    // **字节保真的旁路信息**：decoded 值里可能带着原始符号 / 填充半字节
+    // （见 FIDELITY.md）。JSON 数字没有地方放这些位，若不单独带出来，
+    // 「decode → JSONL → encode」这条路径就只能按默认写法重编码，
+    // 结果是 `12 34 FC` 变成 `12 34 0C`、`F1 F2 C3` 变成 `F1 F2 F3`。
+    //
+    // 用 `__nibbles` 这个保留键承载：`{"字段路径": {"sign": 12, "pad": 15}}`。
+    // 键名以双下划线开头，不会与 COBOL 字段名冲突（COBOL 标识符不允许
+    // 下划线开头）。只有真的存在 nibble 信息时才写这个键，
+    // 普通记录（无十进制字段）的 JSONL 输出保持不变。
+    let nib : Map[String, Json] = Map([])
+    for field in layout.fields {
+      let v = match row.get(field.path) {
+        Some(x) => x
+        None =>
+          match row.get(field.name) {
+            Some(x) => x
+            None => Null
+          }
+      }
+      match v {
+        Decimal(d) =>
+          match (d.sign_nibble, d.pad_nibble) {
+            (None, None) => ()
+            (sn, pn) => {
+              let entry : Map[String, Json] = Map([])
+              match sn {
+                Some(n) => entry["sign"] = Json::number(n.to_double())
+                None => ()
+              }
+              match pn {
+                Some(n) => entry["pad"] = Json::number(n.to_double())
+                None => ()
+              }
+              nib[field.path] = Json::object(entry)
+            }
+          }
+        _ => ()
+      }
+    }
+    if nib.size() > 0 {
+      obj["__nibbles"] = Json::object(nib)
+    }
     sb.write_string(Json::object(obj).stringify())
     sb.write_char('\n')
   }

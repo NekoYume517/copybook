@@ -10,6 +10,8 @@ pub fn align_scale(Decimal, Int32, Int32) -> Result[Decimal, DecodeError]
 
 pub fn compile_layout(Array[FieldSpec]) -> RecordLayout raise ParseError
 
+pub fn compile_layout_with_float_mode(Array[FieldSpec], FloatMode) -> RecordLayout raise ParseError
+
 pub fn decode_record(RecordLayout, BytesView) -> Result[Map[String, CellValue], DecodeError]
 
 pub fn decode_record_ordered(RecordLayout, BytesView) -> Result[Array[CellValue], DecodeError]
@@ -35,6 +37,14 @@ pub fn ebcdic_to_unicode(Int32) -> Int32
 pub fn encode_record(RecordLayout, Map[String, CellValue]) -> Result[Bytes, DecodeError]
 
 pub fn encode_records(RecordLayout, Array[Map[String, CellValue]]) -> Result[Bytes, DecodeError]
+
+pub fn hfp_decode_long(BytesView) -> Double
+
+pub fn hfp_decode_short(BytesView) -> Double
+
+pub fn hfp_encode_long(Double, Int32) -> Result[Array[Int32], DecodeError]
+
+pub fn hfp_encode_short(Double, Int32) -> Result[Array[Int32], DecodeError]
 
 pub fn is_ebcdic_digit(Int32) -> Bool
 
@@ -118,6 +128,8 @@ pub(all) struct Decimal {
   coefficient : Int64
   scale : Int32
   negative : Bool
+  sign_nibble : Int32?
+  pad_nibble : Int32?
 }
 pub fn Decimal::from_parts(Int64, Int32, Bool) -> Self
 pub fn Decimal::to_string(Self) -> String
@@ -148,6 +160,11 @@ pub(all) struct FieldSpec {
   group_usage : Usage?
 }
 
+pub(all) enum FloatMode {
+  Hfp
+  Ieee754
+} derive(Eq, @debug.Debug)
+
 pub(all) enum PicCategory {
   Numeric
   Alphabetic
@@ -174,6 +191,7 @@ pub(all) struct RecordLayout {
   byte_length : Int32
   fields : Array[FieldLayout]
   all_fields : Array[FieldLayout]
+  float_mode : FloatMode
 }
 pub fn RecordLayout::covered_bytes(Self) -> Int32
 pub fn RecordLayout::find(Self, StringView) -> FieldLayout?

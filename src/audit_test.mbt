@@ -160,14 +160,22 @@ test "audit: 只有 CR 没有换行的 copybook 可解析" {
 }
 
 // ============================================================================
-// 4. COMP-1 / COMP-2：README 声称支持 ✅，此前 decode/encode 直接报
-//    "not implemented"。实现为 IEEE 754 大端位模式。
+// 4. COMP-1 / COMP-2
+//
+//    字节解释方式由 `RecordLayout.float_mode` 决定，两种**互不兼容**：
+//      · Hfp      — IBM z/OS 主机十六进制浮点（默认，本项目目标平台）
+//      · Ieee754  — GnuCOBOL / Micro Focus / x86 的 binary32 / binary64
+//
+//    这两个表示不是"精度差异"，而是**不同的字节格式**：同一个 1.5 在
+//    HFP 下是 `41 18 00 00`、在 IEEE 下是 `3F C0 00 00`。所以必须显式声明，
+//    不允许猜（见 README「目标标准与兼容范围」）。
 // ============================================================================
 
 ///|
-test "audit: COMP-1 单精度 IEEE 754 大端解码与编码" {
-  let layout = compile_layout(
+test "audit: COMP-1 IEEE 754 大端解码与编码（显式 Ieee754）" {
+  let layout = compile_layout_with_float_mode(
     parse_copybook("01 R.\n  05 A PIC S9(4) COMP-1.\n"),
+    Ieee754,
   )
   inspect(layout.byte_length, content="4")
   // 1.5f32 的 binary32 位模式 = 0x3FC00000，大端存放
@@ -199,9 +207,10 @@ test "audit: COMP-1 单精度 IEEE 754 大端解码与编码" {
 }
 
 ///|
-test "audit: COMP-2 双精度 IEEE 754 大端解码与编码" {
-  let layout = compile_layout(
+test "audit: COMP-2 IEEE 754 大端解码与编码（显式 Ieee754）" {
+  let layout = compile_layout_with_float_mode(
     parse_copybook("01 R.\n  05 A PIC S9(9) COMP-2.\n"),
+    Ieee754,
   )
   inspect(layout.byte_length, content="8")
   // 3.14 的 binary64 位模式大端 = 40 09 1E B8 51 EB 85 1F
@@ -231,9 +240,10 @@ test "audit: COMP-2 双精度 IEEE 754 大端解码与编码" {
 }
 
 ///|
-test "audit: COMP-1/COMP-2 编码接受数值文本（JSONL 路径）" {
-  let layout = compile_layout(
+test "audit: COMP-2 编码接受数值文本（JSONL 路径，显式 Ieee754）" {
+  let layout = compile_layout_with_float_mode(
     parse_copybook("01 R.\n  05 A PIC S9(9) COMP-2.\n"),
+    Ieee754,
   )
   let m : Map[String, CellValue] = Map([])
   m["R.A"] = Text("2.5")
@@ -252,6 +262,54 @@ test "audit: COMP-1/COMP-2 编码接受数值文本（JSONL 路径）" {
     }
     _ => fail("expected Float")
   }
+}
+
+///|
+// 默认模式必须是 HFP（本项目目标平台是 IBM 主机）。这条测试锁定默认值，
+// 防止有人把默认改回 IEEE 而静默改变所有主機数据的解释方式。
+test "audit: COMP-1/COMP-2 默认是 IBM HFP 表示" {
+  let layout = compile_layout(
+    parse_copybook("01 R.\n  05 A PIC S9(4) COMP-1.\n"),
+  )
+  assert_true(layout.float_mode == Hfp)
+}
+
+///|
+// HFP 与 IEEE 的**同一数值、不同字节**对照 —— 这是驳回意见要求的关键案例。
+test "audit: 同一数值 1.5 在 HFP 与 IEEE 下字节完全不同" {
+  let cb = "01 R.\n  05 A PIC S9(4) COMP-1.\n"
+  let hfp_layout = compile_layout_with_float_mode(parse_copybook(cb), Hfp)
+  let ieee_layout = compile_layout_with_float_mode(parse_copybook(cb), Ieee754)
+  // HFP: 1.5 = 0x180000/2^24 × 16^1 → 符号0 指数65 尾数18 00 00
+  let hfp_rec : Bytes = b"\x41\x18\x00\x00"
+  // IEEE: 1.5f32 = 0x3FC00000
+  let ieee_rec : Bytes = b"\x3F\xC0\x00\x00"
+  // 两种模式下解出的数值相同
+  let vh = match decode_record(hfp_layout, hfp_rec).unwrap().get("R.A") {
+    Some(Float(f)) => f
+    _ => fail("expected Float")
+  }
+  let vi = match decode_record(ieee_layout, ieee_rec).unwrap().get("R.A") {
+    Some(Float(f)) => f
+    _ => fail("expected Float")
+  }
+  assert_true((vh - 1.5).abs() < 0.000000001)
+  assert_true((vi - 1.5).abs() < 0.000000001)
+  // 但字节完全不同：这就是"表述浮点处理与 IBM 主机表示存在冲突"的实证
+  assert_eq(hfp_rec[0].to_int(), 0x41)
+  assert_eq(ieee_rec[0].to_int(), 0x3F)
+  // 交叉误读会得到完全错误的值（HFP 字节按 IEEE 读 = 9.5）
+  let wrong = match decode_record(ieee_layout, hfp_rec).unwrap().get("R.A") {
+    Some(Float(f)) => f
+    _ => fail("expected Float")
+  }
+  assert_true((wrong - 9.5).abs() < 0.000000001)
+  // 反向：IEEE 字节按 HFP 读也不等于 1.5
+  let wrong2 = match decode_record(hfp_layout, ieee_rec).unwrap().get("R.A") {
+    Some(Float(f)) => f
+    _ => fail("expected Float")
+  }
+  assert_true((wrong2 - 1.5).abs() > 0.1)
 }
 
 ///|

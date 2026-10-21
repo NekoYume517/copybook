@@ -38,17 +38,58 @@
 /// 不用 Double 承接，因为金额必须精确到分、且要能表示 -0（COBOL 区分 0 与 -0
 /// 在某些比较场景下有意义）。
 ///
-/// 例：`123456789` 配 `scale=2`、`negative=true` → `-1234567.89`
+/// ## 为什么需要 `sign_nibble` / `pad_nibble`（字节保真）
+///
+/// 同一个数值在 COBOL 的 packed / zoned 存储里有**多种合法字节写法**：
+///
+/// | 值 | 合法字节（COMP-3, S9(4)） | 说明 |
+/// |---|---|---|
+/// | 1234 | `01 23 4C` | 正号 C（最常见） |
+/// | 1234 | `01 23 4F` | 正号 F（IBM 对无符号字段写的，也被接受） |
+/// | 1234 | `01 23 4D`？ | 否 —— D 是负号 |
+/// | -1234 | `01 23 4D` | 负号 D（唯一写法） |
+/// | 1234 | `12 34 0C` / `12 34 0F` | 4 位数字 + 填充 0 |
+///
+/// 若 decode 只留下"值是 1234、符号为正"，encode 就只能按**自己的偏好**
+/// 写一个字节——原始记录里的 `F` 会被改成 `C`。数值对了，**字节不对**，
+/// 于是 `decode → encode` 不再逐字节还原，「无损往返」就退化成「数值往返」。
+///
+/// 所以 decode 把**实际读到的**符号半字节与填充半字节一并带出来，
+/// encode 优先沿用它们；调用方自己构造 `Decimal` 时才回落到默认写法。
+/// `None` 表示"没有原始字节信息"（新建值 / 非十进制来源）。
 pub(all) struct Decimal {
   coefficient : Int64
   scale : Int32
   negative : Bool
+  /// decode 读到的符号半字节（packed 的低半字节 / zoned 的高半字节）。
+  /// 取值 C/D/F；`None` 表示没有原始信息，encode 用默认写法。
+  sign_nibble : Int32?
+  /// decode 读到的末字节填充半字节（仅 packed，0 或 F）。
+  pad_nibble : Int32?
 }
 
 ///|
-/// 构造 Decimal。
+/// 构造 Decimal（无原始字节信息；encode 会用默认符号写法 C / F）。
 pub fn Decimal::from_parts(coef : Int64, scale : Int32, neg : Bool) -> Decimal {
-  { coefficient: coef, scale, negative: neg, }
+  {
+    coefficient: coef,
+    scale,
+    negative: neg,
+    sign_nibble: None,
+    pad_nibble: None,
+  }
+}
+
+///|
+/// 构造 Decimal 并保留原始符号 / 填充半字节（decode 内部用，保证字节往返）。
+fn decimal_with_nibbles(
+  coef : Int64,
+  scale : Int32,
+  neg : Bool,
+  sign_nibble : Int32?,
+  pad_nibble : Int32?,
+) -> Decimal {
+  { coefficient: coef, scale, negative: neg, sign_nibble, pad_nibble, }
 }
 
 ///|
@@ -264,6 +305,8 @@ fn decode_zoned(
   }
   let mut coef : Int64 = 0
   let mut embedded_negative = false
+  // 记录实际读到的符号半字节，供 encode 原样写回（0xC 与 0xF 同为正号但字节不同）
+  let mut sign_nib : Int32? = None
   for i = 0; i < dn; i = i + 1 {
     let b = digit_bytes[i].to_int()
     let lo = b & 0xF
@@ -299,6 +342,7 @@ fn decode_zoned(
             ),
           )
       }
+      sign_nib = Some(hi)
     } else if hi != 0xF {
       return Err(
         InvalidNumeric(
@@ -323,7 +367,7 @@ fn decode_zoned(
       ),
     )
   }
-  Ok(Decimal::from_parts(coef, scale, negative))
+  Ok(decimal_with_nibbles(coef, scale, negative, sign_nib, None))
 }
 
 ///|
@@ -393,7 +437,14 @@ fn decode_packed(
           ),
         )
       }
-      return Ok(Decimal::from_parts(coef, scale, neg))
+      // 保留实际读到的符号半字节与填充半字节：0xC 与 0xF 都表示正号，
+      // 但字节不同，encode 必须原样写回才能逐字节往返（见 Decimal 文档表）。
+      let pad = if digit_count < total_digits || hi == 0x0 || hi == 0xF {
+        Some(hi)
+      } else {
+        None
+      }
+      return Ok(decimal_with_nibbles(coef, scale, neg, Some(lo), pad))
     }
     // 非末字节：两半都是数字
     if hi > 9 {
@@ -486,11 +537,19 @@ fn decode_text(
 }
 
 ///|
-/// 解码 IEEE 754 浮点（COMP-1 = 4 字节单精度，COMP-2 = 8 字节双精度），大端。
+/// 解码 COMP-1 / COMP-2。
+///
+/// `mode` 决定字节解释方式，两者**完全互不兼容**：
+///   - `Hfp`：IBM 主机十六进制浮点（1 符号 + 7 位 excess-64 指数 + 24/56 位尾数）
+///   - `Ieee754`：IEEE 754 binary32 / binary64（1 符号 + 8 位 excess-127/1023 指数）
+///
+/// 同一份 4 字节 `41 18 00 00` 在 HFP 下是 1.5、在 IEEE 下是 9.5 ——
+/// 所以必须先由数据源确定模式，不允许猜。
 fn decode_float_bytes(
   bytes : BytesView,
   base_offset : Int32,
   double_precision : Bool,
+  mode : FloatMode,
 ) -> Result[CellValue, DecodeError] {
   let want = if double_precision { 8 } else { 4 }
   if bytes.length() != want {
@@ -501,16 +560,26 @@ fn decode_float_bytes(
       ),
     )
   }
-  let mut raw : UInt64 = 0UL
-  for i = 0; i < want; i = i + 1 {
-    raw = (raw << 8) | bytes[i].to_int().to_uint64()
-  }
-  if double_precision {
-    Ok(Float(raw.to_int64().reinterpret_as_double()))
-  } else {
-    // 单精度：低 32 位就是 binary32 位模式（raw 只有 4 字节，右移 32 恒为 0）
-    let bits : Int32 = raw.to_int()
-    Ok(Float(Float::reinterpret_from_int(bits).to_double()))
+  match mode {
+    Hfp =>
+      if double_precision {
+        Ok(Float(hfp_decode_long(bytes)))
+      } else {
+        Ok(Float(hfp_decode_short(bytes)))
+      }
+    Ieee754 => {
+      let mut raw : UInt64 = 0UL
+      for i = 0; i < want; i = i + 1 {
+        raw = (raw << 8) | bytes[i].to_int().to_uint64()
+      }
+      if double_precision {
+        Ok(Float(raw.to_int64().reinterpret_as_double()))
+      } else {
+        // 单精度：低 32 位就是 binary32 位模式（raw 只有 4 字节，右移 32 恒为 0）
+        let bits : Int32 = raw.to_int()
+        Ok(Float(Float::reinterpret_from_int(bits).to_double()))
+      }
+    }
   }
 }
 
@@ -524,6 +593,7 @@ fn decode_float_bytes(
 fn decode_field(
   field : FieldLayout,
   record : BytesView,
+  float_mode : FloatMode,
 ) -> Result[CellValue, DecodeError] {
   let offset = field.offset
   let length = field.byte_length
@@ -601,8 +671,8 @@ fn decode_field(
             Ok(d) => Ok(Decimal(d))
             Err(e) => Err(e)
           }
-        Comp1 => decode_float_bytes(bytes, offset, false)
-        Comp2 => decode_float_bytes(bytes, offset, true)
+        Comp1 => decode_float_bytes(bytes, offset, false, float_mode)
+        Comp2 => decode_float_bytes(bytes, offset, true, float_mode)
       }
   }
 }
@@ -673,7 +743,7 @@ fn decode_record_impl(
           offset: field.offset + (k - 1) * field.byte_length,
         }
         let key = "\{field.path}(\{k})"
-        match decode_field(elem, record) {
+        match decode_field(elem, record, layout.float_mode) {
           Ok(v) => out[key] = v
           Err(e) =>
             if strict || field.redefine_group == 0 {
@@ -686,7 +756,7 @@ fn decode_record_impl(
       }
       continue
     }
-    let r = decode_field(field, record)
+    let r = decode_field(field, record, layout.float_mode)
     match r {
       Ok(v) => out[field.path] = v
       Err(e) =>
@@ -723,7 +793,7 @@ pub fn decode_record_ordered(
           ..field,
           offset: field.offset + (k - 1) * field.byte_length,
         }
-        match decode_field(elem, record) {
+        match decode_field(elem, record, layout.float_mode) {
           Ok(v) => out.push(v)
           Err(e) => return Err(e)
         }
@@ -731,7 +801,7 @@ pub fn decode_record_ordered(
       }
       continue
     }
-    match decode_field(field, record) {
+    match decode_field(field, record, layout.float_mode) {
       Ok(v) => out.push(v)
       Err(e) => return Err(e)
     }

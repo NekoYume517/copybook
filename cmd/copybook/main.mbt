@@ -35,6 +35,19 @@ fn usage_text() -> String {
     "  copybook encode --copybook <file.cpy> --json <file.jsonl> --out <file.dat>\n",
   )
   sb.write_string("  copybook verify --copybook <file.cpy> --data <file.dat>\n")
+  sb.write_string("\n全局选项:\n")
+  sb.write_string(
+    "  --float-mode hfp|ieee  COMP-1/COMP-2 的字节解释方式（默认 hfp）\n",
+  )
+  sb.write_string(
+    "                         hfp  = IBM z/OS 主机十六进制浮点（base-16 指数）\n",
+  )
+  sb.write_string(
+    "                         ieee = IEEE 754 binary32/binary64（GnuCOBOL/x86）\n",
+  )
+  sb.write_string(
+    "                         两者字节布局互不兼容，必须先确定数据源属于哪一种\n",
+  )
   sb.write_string("\n退出码: 0 成功 / 1 数据错误 / 2 用法错误\n")
   sb.to_string()
 }
@@ -48,6 +61,12 @@ priv struct Options {
   mut out : String?
   mut format : String
   mut record_length : Int32?
+  /// COMP-1 / COMP-2 的字节解释方式（`hfp` 默认 / `ieee`）。
+  ///
+  /// 这不是"精度选项"，而是**数据源属性**：IBM z/OS 写 HFP、
+  /// GnuCOBOL / Micro Focus 写 IEEE 754，同一份 copybook 两种字节布局完全
+  /// 互不兼容。默认 `hfp`（本项目目标平台）。见 `--float-mode`。
+  mut float_mode : @lib.FloatMode
 }
 
 ///|
@@ -63,6 +82,7 @@ fn parse_options(args : ArrayView[String]) -> Result[Options, String] {
     out: None,
     format: "jsonl",
     record_length: None,
+    float_mode: @lib.Hfp,
   }
   let mut i = 0
   let n = args.length()
@@ -129,6 +149,19 @@ fn parse_options(args : ArrayView[String]) -> Result[Options, String] {
             }
           Err(e) => return Err(e)
         }
+      "--float-mode" =>
+        match take_value() {
+          Ok(v) =>
+            match v.to_lower() {
+              "hfp" | "ibm" | "hex" => opts.float_mode = @lib.Hfp
+              "ieee" | "ieee754" | "binary" => opts.float_mode = @lib.Ieee754
+              other =>
+                return Err(
+                  "--float-mode expects 'hfp' (IBM 主机, 默认) or 'ieee' (GnuCOBOL/x86), got '\{other}'",
+                )
+            }
+          Err(e) => return Err(e)
+        }
       _ => return Err("unknown option '\{key}'")
     }
     i = i + 1
@@ -160,7 +193,10 @@ fn parse_positive_int(s : StringView) -> Int32? {
 
 ///|
 /// 从文件读 copybook 并编译布局。
-fn load_layout(path : String) -> Result[@lib.RecordLayout, String] {
+fn load_layout(
+  path : String,
+  float_mode : @lib.FloatMode,
+) -> Result[@lib.RecordLayout, String] {
   let text = match read_text_file(path) {
     Some(t) => t
     None => return Err("cannot read copybook '\{path}'")
@@ -169,7 +205,7 @@ fn load_layout(path : String) -> Result[@lib.RecordLayout, String] {
     Ok(s) => s
     Err(msg) => return Err("copybook parse error: \{msg}")
   }
-  match try_compile(specs) {
+  match try_compile(specs, float_mode) {
     Ok(l) => Ok(l)
     Err(msg) => Err("layout error: \{msg}")
   }
@@ -207,8 +243,9 @@ fn try_parse_raw(
 ///|
 fn try_compile(
   specs : Array[@lib.FieldSpec],
+  float_mode : @lib.FloatMode,
 ) -> Result[@lib.RecordLayout, String] {
-  try @lib.compile_layout(specs) catch {
+  try @lib.compile_layout_with_float_mode(specs, float_mode) catch {
     e => Err(e.to_display())
   } noraise {
     v => Ok(v)
@@ -245,7 +282,7 @@ fn cmd_layout(opts : Options) -> Int32 {
       return EXIT_USAGE
     }
   }
-  let layout = match load_layout(cpy) {
+  let layout = match load_layout(cpy, opts.float_mode) {
     Ok(l) => l
     Err(msg) => {
       eprintln(msg)
@@ -286,7 +323,7 @@ fn cmd_decode(opts : Options) -> Int32 {
       return EXIT_USAGE
     }
   }
-  let layout = match load_layout(cpy) {
+  let layout = match load_layout(cpy, opts.float_mode) {
     Ok(l) => l
     Err(msg) => {
       eprintln(msg)
@@ -366,7 +403,7 @@ fn cmd_encode(opts : Options) -> Int32 {
       return EXIT_USAGE
     }
   }
-  let layout = match load_layout(cpy) {
+  let layout = match load_layout(cpy, opts.float_mode) {
     Ok(l) => l
     Err(msg) => {
       eprintln(msg)
@@ -445,7 +482,7 @@ fn cmd_verify(opts : Options) -> Int32 {
       return EXIT_USAGE
     }
   }
-  let layout = match load_layout(cpy) {
+  let layout = match load_layout(cpy, opts.float_mode) {
     Ok(l) => l
     Err(msg) => {
       eprintln(msg)
@@ -546,6 +583,7 @@ fn main {
         out: None,
         format: "",
         record_length: None,
+        float_mode: @lib.Hfp,
       }
     }
   }

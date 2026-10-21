@@ -65,6 +65,12 @@ pub(all) struct RecordLayout {
   byte_length : Int32
   fields : Array[FieldLayout]
   all_fields : Array[FieldLayout]
+  /// COMP-1 / COMP-2 的字节解释方式。
+  ///
+  /// 这是**数据源属性**（同一份 copybook 在不同主机上落盘字节不同），
+  /// 不是字段属性，所以挂在 layout 上而不是 `PicClause` 上。
+  /// 默认 `Hfp`（IBM z/OS 主机）；GnuCOBOL / Micro Focus 产物用 `Ieee754`。
+  float_mode : FloatMode
 }
 
 ///|
@@ -610,7 +616,22 @@ pub fn compile_layout(
     byte_length: b.cursor,
     fields: sorted_leaves,
     all_fields: sorted_all,
+    float_mode: Hfp,
   }
+}
+
+///|
+/// 指定浮点表示编译布局。
+///
+/// `COMP-1` / `COMP-2` 在 IBM 主机上是 HFP、在 GnuCOBOL / Micro Focus 上
+/// 是 IEEE 754 —— 字节布局完全互不兼容（见 `hfp.mbt` 文件头对照表）。
+/// 解码前必须先声明数据源属于哪一种，否则浮点字段会解出毫无意义的数。
+pub fn compile_layout_with_float_mode(
+  specs : Array[FieldSpec],
+  float_mode : FloatMode,
+) -> RecordLayout raise ParseError {
+  let base = compile_layout(specs)
+  { ..base, float_mode, }
 }
 
 ///|

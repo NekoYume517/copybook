@@ -55,6 +55,9 @@ copybook verify --copybook examples/customer.cpy --data examples/customer.dat
 copybook decode --copybook examples/customer.cpy --data examples/customer.dat --format jsonl > out.jsonl
 copybook encode --copybook examples/customer.cpy --json out.jsonl --out roundtrip.dat
 # roundtrip.dat 与 examples/customer.dat 逐字节相同
+
+# 数据源是 GnuCOBOL / Micro Focus 时，浮点要显式声明为 IEEE 754
+copybook decode --copybook app.cpy --data app.dat --float-mode ieee
 ```
 
 > `verify` 走的是内存内 decode→encode，不经过 JSON。要验证「导出成 JSON 再导回」
@@ -79,7 +82,76 @@ OFFSET  LENGTH  OCCURS  TYPE              NAME
     52       2       1  9(2) DISPLAY      CUSTOMER-RECORD.FLAGS.TIER
 ```
 
-## 支持的 COBOL 子集
+## 目标标准与兼容范围
+
+这一节回答「你实现的到底是哪个 COBOL」——**去掉这一段，任何字节级声明都站不住**。
+
+### 目标平台
+
+本项目的首要目标是** IBM 大型机（z/OS）落地的定长记录**。这决定了下面每个默认值：
+
+| 维度 | 本项目采用 | 依据 |
+|---|---|---|
+| 字符编码 | **EBCDIC cp037**（US/Canada） | 主機记录的实际编码；ASCII 不是候选 |
+| 记录形态 | **定长**，无 RDW/BDW，记录间无填充 | 主机批量文件的标准形态 |
+| 数值表示 | zoned decimal / **COMP-3 打包十进制** / COMP 二进制补码 | COBOL 主机端标准数值格式 |
+| **浮点表示** | **IBM HFP 十六进制浮点**（base-16 指数） | z/OS 的 `COMP-1` / `COMP-2` 原生格式 |
+| 语言子集 | COBOL-85 数据描述子集 + IBM Enterprise COBOL 常用扩展 | 见下方「支持的 COBOL 子集」 |
+
+### 语言标准
+
+- **数据描述**：ISO/IEC 1989（COBOL-85）的 `PIC` / `USAGE` / `OCCURS` / `REDEFINES` / `SIGN` 子句语义
+- **扩展**：IBM Enterprise COBOL 的 `COMP-1` / `COMP-2` / `COMP-4` / `FLOAT-SHORT` / `FLOAT-LONG` 写法
+- **不涉及**：过程部（`PROCEDURE DIVISION`）语义、`MOVE` 的隐式转换规则、运行时算术——本项目只做**数据布局与字节编解码**，不做 COBOL 解释器
+
+### 浮点：两种互不兼容的表示
+
+这是本项目最容易出错、也最需要显式声明的一点。**同一个数值 `1.5`，在不同 COBOL 实现的 `COMP-1` 里字节完全不同**：
+
+| 实现 | `COMP-1` 存 1.5 的字节 | 格式 | 指数 |
+|---|---|---|---|
+| **IBM z/OS 主机** | `41 18 00 00` | **HFP**（十六进制浮点） | base-16，excess-64 |
+| GnuCOBOL / Micro Focus / x86 | `3F C0 00 00` | IEEE 754 binary32 | base-2，excess-127 |
+
+两者的差异不是"精度不同"，而是**格式不同**：
+
+| 属性 | IBM HFP | IEEE 754 |
+|---|---|---|
+| 指数基数 | **16** | 2 |
+| 指数偏置 | 64（7 位） | 127 / 1023（8 / 11 位） |
+| `COMP-1` 尾数 | 24 位（6 个十六进制数字） | 24 位（隐含前导 1） |
+| `COMP-2` 尾数 | 56 位（14 个十六进制数字） | 53 位（隐含前导 1） |
+| NaN / ±Infinity | **没有** | 有 |
+| 渐进下溢 | **没有**（小于 2^-260 直接下溢） | 有非规格化数 |
+| ±0 | 尾数为 0，符号位保留 | 有专门的 ±0 编码 |
+
+**因此本项目要求显式声明浮点表示，不提供"猜"的模式：**
+
+```bash
+# 默认：IBM 主机 HFP（本项目目标平台）
+copybook decode --copybook app.cpy --data app.dat
+
+# GnuCOBOL / Micro Focus 产生的数据：显式指定 IEEE 754
+copybook decode --copybook app.cpy --data app.dat --float-mode ieee
+```
+
+选错的后果是**数值完全错误但不会报错**——`41 18 00 00` 按 IEEE 读出来是 9.5。这是把 HFP 的 `41 18 00 00` 当成 IEEE 754 解释后的结果；反过来把 IEEE 的 `3F C0 00 00` 当成 HFP 解释，也会得到无意义的值。所以 `layout` / `decode` / `encode` / `verify` 四个子命令都接受 `--float-mode`，且默认值写死为 `hfp`（有回归测试锁定，不允许悄悄改回 IEEE）。
+
+浮点字节保真的边界也在 [FIDELITY.md](FIDELITY.md) 里逐条列出（`COMP-2` 的 56 位尾数比 double 多 3 位，超出部分在解码时按最近偶数舍入丢失——这是 `Double` 类型本身的表达能力所限，不是实现缺陷）。
+
+### 兼容范围速查
+
+| 数据来源 | 能否用本项目 | 需要的选项 |
+|---|---|---|
+| IBM z/OS 批量导出（EBCDIC + COMP-3 + HFP） | ✅ 完整支持 | 默认 |
+| 同上但含 IEEE 浮点字段（`ARITH(IEEE)` 编译） | ⚠️ 浮点需声明 | `--float-mode ieee` |
+| GnuCOBOL 生成的测试数据 | ⚠️ 浮点需声明 | `--float-mode ieee` |
+| Micro Focus 生成的数据 | ⚠️ 浮点需声明 | `--float-mode ieee` |
+| ASCII 编码的 COBOL 文件 | ❌ 不支持 | 本项目只解 EBCDIC |
+| 变长记录（RDW/BDW 头） | ❌ 不支持 | 需先剥离头部再喂进来 |
+| 多个 `01` 层级混排的记录型态 | ⚠️ 有简化 | 见「已声明的简化」 |
+
+
 
 | 特性 | 状态 |
 |---|---|
@@ -90,7 +162,7 @@ OFFSET  LENGTH  OCCURS  TYPE              NAME
 | `PIC S9(n)V9(m)` 隐含小数 | ✅ |
 | `COMP` / `COMP-4` 二进制 | ✅ |
 | `COMP-3` 打包十进制 | ✅ |
-| `COMP-1` / `COMP-2` 浮点 | ✅ |
+| `COMP-1` / `COMP-2` 浮点 | ✅ 默认 IBM HFP；`--float-mode ieee` 切 IEEE 754 |
 | `OCCURS n TIMES` | ✅ |
 | `REDEFINES` | ✅ |
 | `SIGN ... SEPARATE` | ✅ |
@@ -125,15 +197,18 @@ src/
   lexer.mbt        copybook 词法
   parser.mbt       copybook 语法（层级树、PIC 子句）
   layout.mbt       字节布局计算
+  hfp.mbt          IBM 十六进制浮点（COMP-1 / COMP-2 主机格式）
   decode.mbt       记录 → 类型化值
   encode.mbt       类型化值 → 记录
   output.mbt       JSONL / 表格 / 布局报告
+  fidelity_test.mbt  字节保真回归（同值不同符号字节）
   audit_test.mbt   对抗性审计回归测试
 cmd/copybook/
   main.mbt         CLI
 ```
 
-详细 API 见 [API.md](API.md)，MoonBit 语法要点见 [MOONBIT-GUIDE.md](MOONBIT-GUIDE.md)。
+详细 API 见 [API.md](API.md)，字节保真的完整说明见 [FIDELITY.md](FIDELITY.md)，
+MoonBit 语法要点见 [MOONBIT-GUIDE.md](MOONBIT-GUIDE.md)。
 
 ## 背景资料
 

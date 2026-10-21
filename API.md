@@ -210,13 +210,21 @@ pub(all) enum CellValue {
   Decimal(Decimal)      // 定点小数，见下
   Bool(Bool)
   Bytes(Bytes)
-  Float(Double)         // IEEE 754 浮点（COMP-1 / COMP-2 专用）
+  Float(Double)         // COMP-1 / COMP-2 的值（字节表示见 float_mode）
+}
+
+/// 浮点字节表示。挂在 RecordLayout 上（数据源属性，不是字段属性）。
+pub(all) enum FloatMode {
+  Hfp        // IBM z/OS 十六进制浮点（默认）
+  Ieee754    // IEEE 754 binary32 / binary64
 }
 
 pub(all) struct Decimal {
   coefficient : Int64      // 去掉小数点的整数部分
   scale : Int              // 小数位数
   negative : Bool
+  sign_nibble : Int?       // decode 读到的符号半字节（C/D/F），用于字节保真
+  pad_nibble : Int?        // decode 读到的 packed 填充半字节（0/F）
 }
 
 pub fn Decimal::to_string(self : Decimal) -> String
@@ -247,7 +255,14 @@ pub fn decode_record_strict(layout : RecordLayout, record : BytesView) -> Result
 - zoned decimal：每个字节低 4 位是数字；**最后一个字节的高 4 位是符号**（`0xC`/`0xF` 正，`0xD` 负）。
 - packed decimal（COMP-3）：每字节两半字节；最后一字节低 4 位是符号。
 - COMP 二进制：按字节数用**大端**读取，有符号用补码。
-- COMP-1 / COMP-2：IEEE 754 浮点，4 / 8 字节大端；解码为 `CellValue::Float`。
+- COMP-1 / COMP-2：**字节解释方式由 `RecordLayout.float_mode` 决定**，两种互不兼容：
+  - `Hfp`（默认）：IBM z/OS 主机十六进制浮点，1 符号位 + 7 位 excess-64 指数（base-16）
+    + 24/56 位尾数
+  - `Ieee754`：IEEE 754 binary32 / binary64，1 符号位 + 8/11 位 excess-127/1023 指数
+
+  同一个 `1.5` 在 HFP 下是 `41 18 00 00`、在 IEEE 下是 `3F C0 00 00`。
+  解码为 `CellValue::Float`。用 `compile_layout_with_float_mode` 或 CLI `--float-mode`
+  指定；默认 `Hfp`（有测试锁定），不允许"猜"。
 - 文本字段：EBCDIC 解码后 `trim_end` 空格（0x40）。
 - P 缩放位（`PIC PP9(3)` / `PIC 9(3)PP`）不占存储：存储宽度按
   `storage_digits`；数值语义折算进 `scale`（前导 P 增大 scale，

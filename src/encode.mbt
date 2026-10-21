@@ -125,7 +125,22 @@ fn encode_zoned(
         ),
       )
   }
-  let sign_nibble = if d.negative { 0xD } else { 0xF }
+  // zoned 的正号半字节也有两种合法写法：0xC（最常见）与 0xF（未符号化）。
+  // decode 记下实际读到的那个，encode 原样写回，保证 `F1 F2 F3` 与 `C1 F2 F3`
+  // 各自往返后字节不变。调用方新建的值（sign_nibble = None）用默认 0xF/C。
+  let sign_nibble = match d.sign_nibble {
+    Some(nib) =>
+      if (nib == 0xC || nib == 0xF) && !d.negative {
+        nib
+      } else if nib == 0xD && d.negative {
+        0xD
+      } else if d.negative {
+        0xD
+      } else {
+        0xF
+      }
+    None => if d.negative { 0xD } else { 0xF }
+  }
   if pic.sign_separate {
     let sign_byte = if d.negative { 0x60 } else { 0x4E }
     let digit_start = if pic.sign_leading { 1 } else { 0 }
@@ -190,7 +205,11 @@ fn encode_packed(
   //   - 无符号字段：一律 0xF。IBM 标准规定无符号 packed 的正号是 0xF，
   //     不是 0xC —— 用 0xC 会让标准生成的 `12 3F` 无法字节一致地往返。
   //     （decode 侧接受 C/D/F 三种正号，所以旧写法只是丢往返，不丢数据。）
-  let sign_nibble = if pic.signed {
+  //
+  // **字节保真**：若这个值是从字节解码来的，`sign_nibble` 带着原始半字节
+  // （0xC 或 0xF 都可能是正号），优先原样写回。否则 `01 23 4F` 会被改写成
+  // `01 23 4C` —— 数值相同但字节不同，往返就不再逐字节一致。
+  let default_sign = if pic.signed {
     if d.negative {
       0xD
     } else {
@@ -199,17 +218,45 @@ fn encode_packed(
   } else {
     0xF
   }
-  // 数字串 + 符号半字节，按半字节流写出
+  let sign_nibble = match d.sign_nibble {
+    // 原始符号半字节只在"符号语义一致"时沿用：解码得到的 negative
+    // 与当前值一致才安全（值被调用方改过符号时用默认写法）。
+    // 注意：**不因为字段无符号就把 0xC 改写成 0xF** —— decode 读到的
+    // 就是记录里的真实字节，保真的定义是"原样写回"，不是"改成我喜欢的写法"。
+    // 默认写法（无原始信息时）才区分有符号 / 无符号。
+    Some(nib) => {
+      let nib_is_neg = nib == 0xD
+      if nib_is_neg == d.negative && (nib == 0xC || nib == 0xD || nib == 0xF) {
+        nib
+      } else {
+        default_sign
+      }
+    }
+    None => default_sign
+  }
+  // 数字串 + 符号半字节，按半字节流写出。
+  //
+  // 末字节的高半字节可能是**填充**（数字位数为奇数时）：合法写法有 0x0 和 0xF
+  // 两种（`12 3C` 与 `F2 3C` 都表示 123）。默认写 0；若该值来自字节解码，
+  // 沿用原始填充半字节以保真。
+  let pad_hi = match d.pad_nibble {
+    Some(p) => if p == 0x0 || p == 0xF { p } else { 0 }
+    None => 0
+  }
   let mut digit_index = 0
   for i = 0; i < bytes_needed; i = i + 1 {
+    let is_last = i == bytes_needed - 1
     let hi = if digit_index < width {
       let v = padded[digit_index].to_int() - '0'.to_int()
       digit_index = digit_index + 1
       v
+    } else if is_last {
+      // 数字已排完，末字节高半字节是填充
+      pad_hi
     } else {
       0
     }
-    let lo = if i == bytes_needed - 1 {
+    let lo = if is_last {
       sign_nibble
     } else if digit_index < width {
       let v = padded[digit_index].to_int() - '0'.to_int()
@@ -405,7 +452,13 @@ pub fn align_scale(
       coef = coef * 10L
       k = k + 1
     }
-    Ok(Decimal::from_parts(coef, expected, d.negative))
+    Ok(Decimal::{
+      coefficient: coef,
+      scale: expected,
+      negative: d.negative,
+      sign_nibble: d.sign_nibble,
+      pad_nibble: d.pad_nibble,
+    })
   } else {
     let mut coef = d.coefficient
     let mut k = d.scale
@@ -420,7 +473,13 @@ pub fn align_scale(
       coef = coef / 10L
       k = k - 1
     }
-    Ok(Decimal::from_parts(coef, expected, d.negative))
+    Ok(Decimal::{
+      coefficient: coef,
+      scale: expected,
+      negative: d.negative,
+      sign_nibble: d.sign_nibble,
+      pad_nibble: d.pad_nibble,
+    })
   }
 }
 
@@ -543,6 +602,7 @@ fn encode_field(
   w : Writer,
   field : FieldLayout,
   values : Map[String, CellValue],
+  float_mode : FloatMode,
 ) -> Result[Unit, DecodeError] {
   let pic = field.pic
   let offset = field.offset
@@ -636,23 +696,31 @@ fn encode_field(
           }
           encode_binary(w, offset, pic, d)
         }
-        Comp1 => encode_float_bytes(w, offset, length, v, false)
-        Comp2 => encode_float_bytes(w, offset, length, v, true)
+        Comp1 => encode_float_bytes(w, offset, length, v, false, float_mode)
+        Comp2 => encode_float_bytes(w, offset, length, v, true, float_mode)
       }
   }
 }
 
 ///|
-/// 编码 IEEE 754 浮点（COMP-1 = 4 字节单精度，COMP-2 = 8 字节双精度），大端。
+/// 编码 COMP-1 / COMP-2。
+///
+/// `mode` 决定字节解释方式（与 `decode_float_bytes` 严格对称）：
+///   - `Hfp`：IBM 主机十六进制浮点
+///   - `Ieee754`：IEEE 754 binary32 / binary64
 ///
 /// 接受 `Float` 直接写入，也接受数值文本（便于从 JSONL 往返）。
 /// `width` 是布局层算出的字段字节数，用于越界防御。
+///
+/// HFP 没有 NaN / ±Infinity：这些值会返回显式错误，而不是写出一串
+/// 主机读不懂的字节（「绝不静默修正」）。
 fn encode_float_bytes(
   w : Writer,
   offset : Int32,
   width : Int32,
   v : CellValue,
   double_precision : Bool,
+  mode : FloatMode,
 ) -> Result[Unit, DecodeError] {
   let want = if double_precision { 8 } else { 4 }
   if width != want {
@@ -679,18 +747,38 @@ fn encode_float_bytes(
         ),
       )
   }
-  let raw : UInt64 = if double_precision {
-    d.reinterpret_as_uint64()
-  } else {
-    let bits : UInt32 = Float::from_double(d).reinterpret_as_uint()
-    bits.to_uint64()
+  match mode {
+    Hfp => {
+      let bytes = if double_precision {
+        hfp_encode_long(d, offset)
+      } else {
+        hfp_encode_short(d, offset)
+      }
+      match bytes {
+        Ok(bs) => {
+          for i, b in bs {
+            w.set(offset + i, b)
+          }
+          Ok(())
+        }
+        Err(e) => Err(e)
+      }
+    }
+    Ieee754 => {
+      let raw : UInt64 = if double_precision {
+        d.reinterpret_as_uint64()
+      } else {
+        let bits : UInt32 = Float::from_double(d).reinterpret_as_uint()
+        bits.to_uint64()
+      }
+      for i = 0; i < want; i = i + 1 {
+        let shift = (want - 1 - i) * 8
+        let byte_val = ((raw >> shift) & 0xFFUL).to_int()
+        w.set(offset + i, byte_val)
+      }
+      Ok(())
+    }
   }
-  for i = 0; i < want; i = i + 1 {
-    let shift = (want - 1 - i) * 8
-    let byte_val = ((raw >> shift) & 0xFFUL).to_int()
-    w.set(offset + i, byte_val)
-  }
-  Ok(())
 }
 
 ///|
@@ -748,7 +836,7 @@ pub fn encode_record(
             None => ()
           }
         }
-        let r = encode_field(w, elem, scoped)
+        let r = encode_field(w, elem, scoped, layout.float_mode)
         match r {
           Ok(_) => ()
           Err(e) => return Err(e)
@@ -778,7 +866,7 @@ pub fn encode_record(
         continue
       }
     }
-    let r = encode_field(w, field, values)
+    let r = encode_field(w, field, values, layout.float_mode)
     match r {
       Ok(_) => ()
       Err(e) => return Err(e)
