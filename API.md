@@ -279,6 +279,11 @@ pub fn encode_records(layout : RecordLayout, rows : Array[Map[String, CellValue]
 
 要求：`decode → encode` 必须逐字节还原（写往返测试，随机数据 500 条）。
 
+`compile_layout` 将所有叶子 OCCURS 展开为带下标路径、`occurs == 1` 的字段。
+记录编解码 API 同时保留对手工构造的 `FieldLayout.occurs > 1` 的兼容支持：
+解码生成 `PATH(1)`、`PATH(2)` 等键，编码按相同键逐元素读取。
+编码缺失的元素使用默认零/空格；未给第一项下标键时，裸路径和裸名仅作为第一项的后备值，显式下标键优先。
+
 ## 6. 输出格式 `src/output.mbt`
 
 ```moonbit

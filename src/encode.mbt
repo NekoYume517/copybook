@@ -804,6 +804,7 @@ pub fn encode_record(
 ) -> Result[Bytes, DecodeError] {
   let w = Writer::new(layout.byte_length)
   for field in layout.fields {
+    // compile_layout 已展开 OCCURS；此分支兼容公开结构体手工构造的未展开布局。
     // OCCURS n>1：按元素逐个写回，键为 `PATH(i)`（1 起始），与 decode 的
     // 展开规则互为镜像。某个元素在 map 里缺失时按「未赋值存储」处理
     // （数值 0 / 字符空格），与单字段路径的 Null 语义一致 —— 这是 JSONL
@@ -811,26 +812,27 @@ pub fn encode_record(
     if field.occurs > 1 {
       let mut k = 1
       while k <= field.occurs {
+        let key = "\{field.path}(\{k})"
         let elem : FieldLayout = {
           ..field,
+          path: key,
           offset: field.offset + (k - 1) * field.byte_length,
         }
-        let key = "\{field.path}(\{k})"
         let scoped : Map[String, CellValue] = Map([])
         match values.get(key) {
           Some(v) => scoped[key] = v
-          None => ()
-        }
-        // 未给下标键但给了裸名/主路径：只有第 1 个元素用它（宽容手写 JSON）
-        if k == 1 {
-          match values.get(field.path) {
-            Some(v) => scoped[field.path] = v
-            None => ()
-          }
-          match values.get(field.name) {
-            Some(v) => scoped[field.name] = v
-            None => ()
-          }
+          // 未给下标键但给了裸名/主路径：只有第 1 个元素用它（宽容手写 JSON）
+          None =>
+            if k == 1 {
+              match values.get(field.path) {
+                Some(v) => scoped[key] = v
+                None =>
+                  match values.get(field.name) {
+                    Some(v) => scoped[key] = v
+                    None => ()
+                  }
+              }
+            }
         }
         let r = encode_field(w, elem, scoped, layout.float_mode)
         match r {

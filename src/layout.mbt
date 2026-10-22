@@ -36,6 +36,8 @@
 /// `offset` 是**绝对**偏移（记录起点为 0），已经包含所有外层 OCCURS 的基址与
 /// 所有外层组的起始位置。`byte_length` 是**单个元素**的长度（不含 OCCURS）；
 /// `total_length == byte_length * occurs`。
+/// `compile_layout` 返回的叶子项已展开为 `PATH(i)` 且 `occurs == 1`；
+/// 记录编解码 API 也兼容调用方手工构造的 `occurs > 1` 叶子项。
 ///
 /// 组项（中间层）也有 FieldLayout：`byte_length` 是组**单次出现**的总长，
 /// 但它的 `pic` 是合成的（见 `group_pic`），这样 `render_layout` 与

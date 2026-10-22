@@ -723,6 +723,7 @@ fn decode_record_impl(
   }
   let out : Map[String, CellValue] = Map([])
   for field in layout.fields {
+    // compile_layout 已展开 OCCURS；此分支兼容公开结构体手工构造的未展开布局。
     // OCCURS n>1：数据面按元素逐个展开，键带 1 起始下标 `PATH(i)`。
     // 布局层的 `byte_length` 是单元素长度，`total_length` 才是全部存储；
     // 曾经只解第 0 个元素，`OCCURS 5` 的记录有 4/5 的数据被静默丢掉。
