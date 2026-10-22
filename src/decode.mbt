@@ -242,16 +242,17 @@ fn slice_at(record : BytesView, offset : Int32, length : Int32) -> BytesView? {
 ///|
 /// 解码 zoned decimal（DISPLAY 数值）。
 ///
-/// **符号在最后一字节的高半字节**，这是最容易漏的一条：
+/// 默认符号在最后一字节的高半字节；SIGN LEADING 则在第一字节：
 ///   `F1 F2 F3` → +123    `F1 F2 D3` → -123    `F1 F2 C3` → +123
 ///
-/// **SIGN SEPARATE** 时末尾（LEADING 则开头）还有一个独立的 ASCII 符号字节：
+/// **SIGN SEPARATE** 时末尾（LEADING 则开头）还有一个独立的 EBCDIC 符号字节：
 ///   EBCDIC '+' = 0x4E，EBCDIC '-' = 0x60。数字部分全是 0xF 区号。
 ///
 /// 校验：
-///   - 所有字节的低半字节必须 ≤ 9
-///   - 非末字节高半字节必须是 0xF（未符号化）或 0xC/0xD（某些实现重复写符号）
-///   - 末字节高半字节必须是 0xC/0xD/0xF
+///   - 所有数字字节的低半字节必须 ≤ 9
+///   - 内嵌符号位置的高半字节必须是 0xC/0xD/0xF
+///   - 其余数字字节的高半字节必须是 0xF，不接受重复写入的符号区号
+///   - SIGN SEPARATE 的所有数字字节均必须是 0xF 区号
 ///
 /// 无符号字段（`signed == false`）仍要接受 0xF，因为未符号化的 zoned 就是 0xF。
 fn decode_zoned(
