@@ -57,3 +57,39 @@ test "manual OCCURS: indexed keys precede first-element bare fallback" {
     Err(_) => fail("sparse indexed values must encode")
   }
 }
+
+///|
+test "manual OCCURS: absent or null redefined elements preserve primary bytes" {
+  let primary = manual_occurs_layout("X")
+  let numeric = manual_occurs_layout("9")
+  let view = { ..numeric.fields[0], name: "B", path: "R.B", redefine_group: 1, }
+  let layout = {
+    ..primary,
+    fields: [primary.fields[0], view],
+    all_fields: [primary.fields[0], view],
+  }
+  let bytes = b"\xD1\xD2"
+  match decode_record(layout, bytes) {
+    Ok(row) => {
+      assert_true(row.get("R.B(1)") is Some(Null))
+      assert_true(row.get("R.B(2)") is Some(Null))
+      match encode_record(layout, row) {
+        Ok(encoded) => assert_eq(encoded, bytes)
+        Err(_) => fail("null redefined elements must be skipped")
+      }
+      row.remove("R.B(1)") |> ignore
+      row.remove("R.B(2)") |> ignore
+      match encode_record(layout, row) {
+        Ok(encoded) => assert_eq(encoded, bytes)
+        Err(_) => fail("missing redefined elements must be skipped")
+      }
+      row["R.B(2)"] = Int(2L)
+      match encode_record(layout, row) {
+        Ok(encoded) => assert_eq(encoded, b"\xD1\xF2")
+        Err(_) =>
+          fail("explicit redefined element must overwrite only its bytes")
+      }
+    }
+    Err(_) => fail("tolerant decoding must retain undecodable views as null")
+  }
+}

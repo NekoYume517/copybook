@@ -595,6 +595,11 @@ fn encode_field(
         None => Null
       }
   }
+  // 重定义视图只是同一段字节的另一种读法。缺值/Null 必须保留主视图字节，
+  // 不能写零或空格；在单字段入口统一处理，也覆盖手工 OCCURS 的逐元素编码。
+  if field.redefine_group != 0 && v is Null {
+    return Ok(())
+  }
   match pic.category {
     National => {
       // NATIONAL is UTF-16BE; PIC N counts UTF-16 code units, not scalar values.
@@ -842,27 +847,6 @@ pub fn encode_record(
         k = k + 1
       }
       continue
-    }
-    // REDEFINES 语义修正（C2）：重定义视图只是**同一段字节的另一种读法**。
-    // 若调用方没有为重定义视图提供值（decode 宽容路径把它解成 Null），
-    // 编码端**绝不能写默认值** —— 那会把主视图已写好的字节覆盖成
-    // 0x40/0x00（真实踩过：redefines.cpy 的合法记录被写成 6 个 0x40）。
-    // 主视图必须先写：fields 按 offset 排序、主视图在前，所以这里只需
-    // 跳过「没有显式值」的重定义视图。
-    if field.redefine_group != 0 {
-      let has_value = match values.get(field.path) {
-        Some(Null) => false
-        Some(_) => true
-        None =>
-          match values.get(field.name) {
-            Some(Null) => false
-            Some(_) => true
-            None => false
-          }
-      }
-      if !has_value {
-        continue
-      }
     }
     let r = encode_field(w, field, values, layout.float_mode)
     match r {
