@@ -288,21 +288,11 @@ fn encode_binary(
   let bits = width * 8
   let limit : Int64 = if width < 8 { 1L << (bits - 1) } else { 0L }
   let coef = d.coefficient
-  let dec_limit : Int64 = match field_storage_digits(pic) {
-    n => {
-      let mut v : Int64 = 1
-      let mut i = 0
-      while i < n {
-        if v > 92233720368547758L {
-          // 位数 > 18 已在解析期拒绝；这里只是防御
-          v = 9223372036854775807L
-          break
-        }
-        v = v * 10L
-        i = i + 1
-      }
-      v
-    }
+  // comp_byte_width 已验证 total 在 1..18 内，10^18 仍可由 Int64 精确表示。
+  // 十进制容量独立于二进制容器宽度：8 字节能容纳 19 位，不代表 PIC 允许。
+  let mut dec_limit : Int64 = 1L
+  for i = 0; i < total; i = i + 1 {
+    dec_limit = dec_limit * 10L
   }
   if coef >= dec_limit || coef <= -dec_limit {
     return Err(
