@@ -442,16 +442,32 @@ fn decode_packed(
 
 ///|
 /// 解码二进制整数（COMP）：大端、有符号用补码。
+///
+/// **十进制容量与 encode 对称强制**（CB-1）。`storage_digits` 来自 PIC 声明，
+/// 是字段「最多几位十进制数」的权威约束：`PIC S9(4) COMP` 的 2 字节容器
+/// 能装 -32768..32767，但能装 ≠ 允许装。encode 一侧早已按同一上限拒绝
+/// （issue #28），decode 若只校验容器宽度，同一份 `7F FF` 就会
+/// 「decode 成功、verify 失败」，两个方向给出互相矛盾的结论。
 fn decode_binary(
   bytes : BytesView,
   base_offset : Int32,
   signed : Bool,
   scale : Int32,
+  storage_digits : Int32,
 ) -> Result[Decimal, DecodeError] {
   let n = bytes.length()
   if n == 0 || n > 8 {
     return Err(
       InvalidNumeric(base_offset, "COMP width must be 1..8 bytes, got \{n}"),
+    )
+  }
+  // 与 comp_byte_width 的上界同源：>18 位没有合法容器，也保证 10^18 不溢出。
+  if storage_digits < 1 || storage_digits > 18 {
+    return Err(
+      InvalidNumeric(
+        base_offset,
+        "COMP supports at most 18 digits, got \{storage_digits}",
+      ),
     )
   }
   let mut raw : Int64 = 0
@@ -475,6 +491,19 @@ fn decode_binary(
       let mask = if n == 8 { -1L } else { (1L << (n * 8)) - 1L }
       raw = ((raw ^ mask) & mask) + 1L
     }
+  }
+  // 十进制容量：声明的位数是权威，容器放得下不算数（与 encode_binary 同源）。
+  let mut dec_limit : Int64 = 1L
+  for i = 0; i < storage_digits; i = i + 1 {
+    dec_limit = dec_limit * 10L
+  }
+  if raw >= dec_limit {
+    return Err(
+      InvalidNumeric(
+        base_offset,
+        "decoded value \{raw} exceeds \{storage_digits} decimal digits declared by PIC (field holds at most \{dec_limit - 1})",
+      ),
+    )
   }
   Ok(Decimal::from_parts(raw, scale, negative))
 }
@@ -658,7 +687,15 @@ fn decode_field(
           }
         }
         Comp =>
-          match decode_binary(bytes, offset, pic.signed, pic.scale) {
+          // 容量校验需要 PIC 声明的存储位数，与 encode_binary 用同一个上限。
+          match
+            decode_binary(
+              bytes,
+              offset,
+              pic.signed,
+              pic.scale,
+              pic.storage_digits,
+            ) {
             Ok(d) => Ok(Decimal(d))
             Err(e) => Err(e)
           }

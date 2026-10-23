@@ -254,7 +254,10 @@ pub fn decode_record_strict(layout : RecordLayout, record : BytesView) -> Result
 规则：
 - zoned decimal：每个字节低 4 位是数字；**最后一个字节的高 4 位是符号**（`0xC`/`0xF` 正，`0xD` 负）。
 - packed decimal（COMP-3）：每字节两半字节；最后一字节低 4 位是符号。
-- COMP 二进制：按字节数用**大端**读取，有符号用补码。
+- COMP 二进制：按字节数用**大端**读取，有符号用补码。**十进制容量按 PIC 声明双向强制**：
+  `S9(4) COMP` 的 2 字节容器放得下 32767，但字段声明只有 4 位十进制数，
+  所以 decode 与 encode 都会拒绝越界值（报 `InvalidNumeric`，不截断、不静默取值）。
+  详见 `docs/implementation.md` 第 9 节。
 - COMP-1 / COMP-2：**字节解释方式由 `RecordLayout.float_mode` 决定**，两种互不兼容：
   - `Hfp`（默认）：IBM z/OS 主机十六进制浮点，1 符号位 + 7 位 excess-64 指数（base-16）
     + 24/56 位尾数

@@ -135,3 +135,30 @@ EBCDIC 测试数据由 `scripts/gen_copybook_data.py` 独立生成——它自�
 - `0` cents → `0.00`
 - 名字尾部 0x40 填充被正确 trim
 - `verify` 报告 5 条记录字节级往返一致
+
+## 9. COMP 的十进制容量：decode 与 encode 必须对称强制
+
+`PIC S9(4) COMP` 占 **2 字节**，二进制容器能表示 `-32768..32767`。但能装下不等于允许装下：COBOL 字段的语义是「**最多 4 位十进制数**」，范围 `-9999..9999`。
+
+这条约束是**双向**的，两侧都必须强制：
+
+| 方向 | 依据 | 越界行为 |
+|---|---|---|
+| encode | PIC 声明的 `storage_digits` | 报 `InvalidNumeric`，绝不截断 |
+| decode | 同一个 `storage_digits` | 报 `InvalidNumeric`，绝不"读出来再说" |
+
+历史教训：issue #28 修了 encode 一侧（`src/encode.mbt` 的 `dec_limit`），decode 一侧（`src/decode.mbt` 的 `decode_binary`）当时只校验宽度 1..8 与无符号符号位。结果同一份 `7F FF`：
+
+```
+copybook decode  → 成功，32767
+copybook verify  → 失败：value 32767 exceeds 4 decimal digits (field holds at most 9999)
+```
+
+`verify` 走的是 decode→encode，encode 拒绝才暴露了问题；**decode 单独看是错的**。两个方向对同一段字节给出互相矛盾的结论，就是单边修补的信号。
+
+现在 `decode_binary` 用与 `encode_binary` 相同的上限判定（`10^storage_digits`），错误消息带绝对偏移并说明「超出 PIC 声明的十进制位数、字段最多能装多少」。回归测试在 `src/comp_decode_capacity_test.mbt`：
+
+- 拒绝：`S9(4)` 的 `7F FF` / `80 00`、`9(4)` 的 `FF FF`、`S9(9)` 的 `7F FF FF FF`
+- 接受并逐字节往返：`S9(4)` 的 `270F`（9999）/ `D8F1`（-9999）、`S9(9)` 的 `3B9AC9FF`（999999999）、`S9(18)` 的 `0DE0B6B3A763FFFF`（18 位边界）
+
+`PIC S9(18) COMP` 是这条规则最容易含糊的地方：8 字节补码能到 `2^63-1`（19 位），但声明容量只有 `10^18-1`，所以 `7FFFFFFFFFFFFFFF` 同样是**解码错误**而不是"一个很大的数"。
