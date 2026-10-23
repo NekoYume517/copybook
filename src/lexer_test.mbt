@@ -229,6 +229,36 @@ test "lexer: 固定列格式截断第 72 列之后" {
 }
 
 ///|
+test "lexer: 80 列的标识号被忽略，不会拼进 PIC 模式串（CB-3 锁定）" {
+  // 与「固定列格式截断第 72 列之后」同一个行为，但用报告里的形状：
+  // 列 73-80 是一段纯数字标识号。若截断失效，`000400` 会被 scan_pic
+  // 当成模式串的一部分（`X(2).000400`）。
+  let code = "000300   05 B PIC X(2)."
+  let line = code + String::make(72 - code.length(), ' ') + "00000004"
+  assert_eq(line.length(), 80)
+  let toks = @src.tokenize(line)
+  assert_eq(
+    kinds_text(toks),
+    "级别号 '5'|标识符 'B'|关键字 'PIC'|PIC 模式串 'X(2)'|'.'|文件结束",
+  )
+}
+
+///|
+test "lexer: 29 列的行没有列 73-80，行尾数字属于代码区（CB-3 判定依据）" {
+  // 报告里的复现行只有 29 列：前 6 列是序号，但行尾的 `000400` 落在
+  // 列 24-29 —— 它在代码区里，不是标识区。截断无从生效（本行没有第 73 列），
+  // 所以模式串确实包含它，后续 PIC 语义解析会报错。这是正确行为：
+  // 定长格式的标识号必须写满 80 列才位于标识区。
+  let line = "000300   05 B PIC X(2).000400"
+  assert_eq(line.length(), 29)
+  let toks = @src.tokenize(line)
+  assert_eq(
+    kinds_text(toks),
+    "级别号 '5'|标识符 'B'|关键字 'PIC'|PIC 模式串 'X(2).000400'|文件结束",
+  )
+}
+
+///|
 test "lexer: REDEFINES / VALUE / USAGE IS COMP-3" {
   let src = "05 ALT REDEFINES LIMIT-AMT VALUE 0 USAGE IS COMP-3."
   let toks = @src.tokenize(src)
