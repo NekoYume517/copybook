@@ -2,7 +2,7 @@
 
 > 仓库：<https://github.com/NekoYume517/copybook>
 > 赛事：MoonBit Hackathon 2026
-> 状态：已交付（`moon check` 0 错误 · 250 测试全绿 · CI 全绿 · wasm 构建通过）
+> 状态：已交付（`moon check` 0 错误 · 320 测试全绿 · CI 全绿 · wasm 构建通过）
 
 ---
 
@@ -49,7 +49,7 @@ lexer → parser → layout → decode/encode → output
 | 阶段 | 内容 | 验收标准 |
 |---|---|---|
 | M1 词法与语法 | 固定列 + 自由格式 tokenizer，PIC 语义解析 | cp037 全 256 项往返；三份真实 copybook 解析通过 |
-| M2 布局计算 | 偏移/长度/摊平，REDEFINES 单游标 | 布局字节数与 Python 独立实现一致（54/98/29） |
+| M2 布局计算 | 偏移/长度/摊平，REDEFINES 单游标 | 布局字节数与 Python 独立实现一致（54/103/29） |
 | M3 编解码 | zoned / packed / COMP / COMP-1/2 / 编辑型 | 500 条随机记录字节级往返；JSONL 路径往返 |
 | M4 CLI 与自检 | layout/decode/encode/verify，退出码 0/1/2 | README 每条命令实测；示例数据可审计 |
 
@@ -57,7 +57,7 @@ lexer → parser → layout → decode/encode → output
 
 ## 5. 质量保障
 
-- **250 个测试**，其中对抗性审查贡献 18 个回归测试（`review_test.mbt` + `audit_test.mbt`），每条对应一个真实复现路径
+- **320 个测试**，其中对抗性审查贡献 30 个回归测试（`review_test.mbt` 18 个 + `audit_test.mbt` 12 个），每条对应一个真实复现路径
 - **独立实现交叉验证**：`scripts/gen_copybook_data.py` 用 Python 独立实现 cp037 / zoned / COMP-3，与 MoonBit 零共享代码——两边一致是证据，不是同义反复
 - **两轮审查**：第一轮子代理对抗审计修复 13 个缺陷；第二轮外部复验确认 18 条修复、抓到 1 个回归并已修复
 - **CI**：Linux runner 上 check / fmt / test --release / build wasm 四道门，依赖解析前显式 `moon update`
