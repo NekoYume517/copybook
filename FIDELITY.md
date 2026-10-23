@@ -97,11 +97,14 @@ IBM HFP 没有 IEEE 那种「负零是特殊值」的语义，但**符号位仍�
 | 信息 | 载体 | 不保留会怎样 |
 |---|---|---|
 | 符号半字节（`C` / `F` / `D`） | `Decimal.sign_nibble` | `F` 正号被改写成 `C`，字节不一致 |
+| **数值的负零**（zoned / packed） | `Decimal.negative` + `__nibbles.sign` | `-0` 变 `+0`：`F0 F0 D0` → `F0 F0 F0`、`00 0D` → `00 0C` |
 | packed 前导填充零 | `Decimal.pad_nibble` | 偶数位字段必须在最左补零；非零填充拒绝 |
 | 浮点符号位（含 ±0） | `Decimal` / `Float` 的符号 | `-0.0` 变 `+0.0` |
 | 浮点格式（HFP / IEEE） | `RecordLayout.float_mode` | 数值完全错误 |
 | 字段宽度与偏移 | `FieldLayout`（布局层算出） | 记录错位 |
 | `FILLER` 占位 | 布局层推进游标，但不进输出 | 后续字段全部偏移错 |
+
+**负零为什么单独列一行**：整数型的 `0` 与 `-0` 数值相等，但 zoned / packed 的符号半字节不同，字节也就不同。走 `decode → JSONL → encode` 时，文本这一环靠不住——JSON 的数字是 double，`-0` 经核心 JSON 词法后原文不保留，放手写的 `-0` 也可能被折叠成 `0`。所以 **JSONL 里的 `__nibbles.sign` 是符号的权威来源**：`0xD` 就是负号，系数为 0 时同样生效。修复前这条旁路只被当作"写回哪个半字节"的提示，`decode` 出 `-0`、`encode` 回 `+0`，而 `verify`（内存路径，`Decimal.negative` 没丢）还报 `byte-identical roundtrip` —— 两条路径互相矛盾。回归测试在 `src/negative_zero_test.mbt`，同时锁定文本链路与 `verify` 两条路径的结论一致。
 
 `FILLER` 那条值得单独说：它**占字节但不产值**，所以解码结果里没有它，编码时却必须把那段字节原样写回。`verify` 用内存内 `decode → encode` 覆盖这条；`decode → JSONL → encode` 路径则依赖编码器对未提供值的字段写"中性字节"（空格 `0x40` / 数字 `0`）——这条路径对含 `FILLER` 且原值非空格的记录**不保证字节一致**，`verify` 会如实报告差异而不是假装通过。
 

@@ -89,14 +89,23 @@ pub fn parse_jsonl_row(
             match out.get(field.path) {
               Some(Text(s)) =>
                 match parse_decimal_with_scale(s, field.pic) {
-                  Some(d) =>
+                  Some(d) => {
+                    // **符号以符号半字节为准**：0xD 是字节层的负号事实。
+                    // 文本在系数为 0 时会丢掉负号 —— JSON 不允许定点类型，
+                    // `-0` 经核心 JSON 词法后原文不保留（repr 只为超出 double
+                    // 精确范围的数字保留），文本只剩 "0"。若这里只看文本，
+                    // zoned `F0 F0 D0` / packed `00 0D` 会被重编码成正零
+                    // `F0 F0 F0` / `00 0C`（CB-2）。非零值仍由文本与半字节
+                    // 共同决定（文本写 `-123`，半字节写 D），两者一致。
+                    let negative = d.negative || sn == Some(0xD)
                     out[field.path] = Decimal(Decimal::{
                       coefficient: d.coefficient,
                       scale: d.scale,
-                      negative: d.negative,
+                      negative,
                       sign_nibble: sn,
                       pad_nibble: pn,
                     })
+                  }
                   None => ()
                 }
               _ => ()
@@ -167,7 +176,16 @@ fn parse_decimal_with_scale(s : String, pic : PicClause) -> Decimal? {
 ///
 /// `42.0` → `"42"`，`12345.67` → `"12345.67"`。
 /// 只用于**手写 JSON 没有 repr** 的兜底路径；导出的 JSONL 总是带 repr。
+///
+/// **负零必须写成 `-0`**：`(-0.0).to_int()` 是 0，走整数折叠就把符号丢了，
+/// 而 `Decimal{coefficient:0, negative:true}` 编码出的字节与正零不同
+/// （zoned `F0 F0 D0` vs `F0 F0 F0`，packed `00 0D` vs `00 0C`）。CB-2 正是
+/// 在这一步把负零变成正零，于是 verify（内存路径）与 JSONL 路径互相矛盾。
 fn format_json_number(d : Double) -> String {
+  // Double 的符号位是 ±0 唯一的区别；reinterpret 成 Int64 后最高位即符号位。
+  if d == 0.0 {
+    return if d.reinterpret_as_int64() < 0L { "-0" } else { "0" }
+  }
   // 整数值直接去掉小数点
   if d == d.to_int().to_double() {
     return d.to_int().to_string()
