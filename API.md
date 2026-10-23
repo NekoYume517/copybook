@@ -274,7 +274,8 @@ pub fn decode_record_strict(layout : RecordLayout, record : BytesView) -> Result
   解码为 `CellValue::Float`。用 `compile_layout_with_float_mode` 或 CLI `--float-mode`
   指定；默认 `Hfp`（有测试锁定），不允许"猜"。
 - X/A 文本字段：EBCDIC 解码后 `trim_end` 空格（0x40）。
-- NATIONAL：UTF-16BE；`PIC N(n)` 容纳 n 个 UTF-16 码元，补充平面字符占两个码元。尾部 U+0020 是填充，编码不足部分写 `00 20`。非法代理项报带绝对字节偏移的 `InvalidNumeric`，不替换字符。
+- NATIONAL：UTF-16BE；`PIC N(n)` 容纳 n 个 UTF-16 码元（**不是 n 个字符**），补充平面字符占两个码元。尾部 U+0020 是填充，编码不足部分写 `00 20`。非法代理项报带绝对字节偏移的 `InvalidNumeric`，不替换字符。
+  容量按码元数校验：`PIC N(1)` 只有 2 码元容量，存 emoji（U+1F600，代理对 `D8 3D DE 00`）会报 `InvalidNumeric`（`text exceeds NATIONAL code-unit capacity`）；要存 emoji 必须声明 `PIC N(2)`。锁定测试见 `src/national_capacity_test.mbt`。
 - P 缩放位（`PIC PP9(3)` / `PIC 9(3)PP`）不占存储：存储宽度按
   `storage_digits`；数值语义折算进 `scale`（前导 P 增大 scale，
   尾随 P 使 scale 为负）。值 = coefficient × 10^(-scale)。

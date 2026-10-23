@@ -158,7 +158,7 @@ copybook decode --copybook app.cpy --data app.dat --float-mode ieee
 | `PIC 9(n)` 数字（zoned decimal） | ✅ |
 | `PIC S9(n)` 带符号 | ✅ |
 | `PIC X(n)` / `A(n)` 字符 | ✅ |
-| `PIC N(n)` 国家字符 | ✅ UTF-16BE，n 为码元数，空位补 U+0020 |
+| `PIC N(n)` 国家字符 | ✅ UTF-16BE；**n 是 UTF-16 码元数**（不是字符数），空位补 U+0020 |
 | `PIC S9(n)V9(m)` 隐含小数 | ✅ |
 | `COMP` / `COMP-4` 二进制 | ✅ |
 | `COMP-3` 打包十进制 | ✅ |
@@ -172,6 +172,18 @@ copybook decode --copybook app.cpy --data app.dat --float-mode ieee
 | `OCCURS DEPENDING ON` | 按上界展开（固定长度存储），`occurs_depending_on` 字段记录依赖名 |
 | 多个 `01` 层级 | **并列拼接为一条记录**（见下方说明） |
 | 组级 `USAGE` | ✅ 子项继承 |
+
+**`PIC N(n)` 的容量单位是 UTF-16 码元，不是「字符个数」**：`N(n)` 占 `2n` 字节，
+每个码元 2 字节，不足补 `00 20`（U+0020）。基本平面（BMP）字符占 1 码元，
+补充平面字符（emoji、少数字形复杂的汉字）在 UTF-16 里是**代理对，占 2 码元**：
+
+```cobol
+05  EMOJI    PIC N(1).   * 只有 2 码元容量 → 存 emoji 报错（不截断、不替换）
+05  EMOJI    PIC N(2).   * 4 字节，emoji 写成 D8 3D DE 00（U+1F600）
+```
+
+放不下时返回带偏移的 `InvalidNumeric`（`text exceeds NATIONAL code-unit capacity`），
+绝不截断成半个代理对。回归测试：`src/national_capacity_test.mbt`。
 
 ### 已声明的简化
 
