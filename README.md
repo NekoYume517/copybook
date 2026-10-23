@@ -166,6 +166,8 @@ copybook decode --copybook app.cpy --data app.dat --float-mode ieee
 | `OCCURS n TIMES` | ✅ |
 | `REDEFINES` | ✅ |
 | `SIGN ... SEPARATE` | ✅ |
+| 固定格式列 7 `-` 续行（`PIC` / `VALUE` 跨行） | ✅ 仅固定格式；自由格式没有续行符，行首 `-` 报错 |
+| 列 73-80 标识区 | ✅ 固定格式下忽略（行长必须真的写到第 73 列） |
 | `PIC 66 RENAMES` / `88` 条件名 | 忽略（记录在 AST） |
 | `OCCURS DEPENDING ON` | 按上界展开（固定长度存储），`occurs_depending_on` 字段记录依赖名 |
 | 多个 `01` 层级 | **并列拼接为一条记录**（见下方说明） |

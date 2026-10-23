@@ -39,6 +39,16 @@
 //   - 定长：第 7 列（索引 6）是 `*` 或 `/`
 //   - 通用：代码区第一个非空白字符是 `*`
 //
+// ## 续行（列 7 `-`）
+//
+// 固定格式下第 7 列的 `-` 是**续行**：该行代码区（列 8..72）接到上一条
+// 逻辑行后面再统一做词法，长 `PIC` / `VALUE` 因此可以跨行书写。实现见
+// `collect_code_lines`；拼接时两端空白被剥掉，所以 `'ABC` + `DEF'` 得到
+// `'ABCDEF'`、`X(` + `5)` 得到 `X(5)`。
+//
+// 自由格式没有续行符：行首 `-` 明确报错（静默跳过会让内容凭空消失）。
+// 列 7 的 `-` 前面没有可续接的逻辑行时同样报错。
+//
 // ## 级别号 vs 普通数字
 //
 // `01`..`49`、`66`、`77`、`88` 是级别号，但 `OCCURS 5 TIMES` 里的 `5`
@@ -319,6 +329,157 @@ fn first_non_blank(cs : Array[Char], from : Int32) -> Int32 {
 }
 
 ///|
+/// 逻辑行：物理行按列切出代码区、并按续行规则拼接之后的结果。
+///
+/// `base_col` 是 `text` 第 0 个字符对应的 1-based 源列号（固定格式的代码区
+/// 从列 8 开始 → base_col = 7；自由格式从列 1 开始 → 0），保证既有报错的
+/// 行列号不变。续行拼进来的内容列号按拼接后的位置递增（合成列号），
+/// 因为它在源码里位于另一行 —— 报错会指到被续接的那一行。
+priv struct CodeLine {
+  line_no : Int32
+  text : String
+  base_col : Int32
+}
+
+///|
+/// 代码区尾部：去掉尾部空白（空格/TAB）。
+///
+/// 续接时行尾空白会把 80 列填充的空格拼进 `VALUE` 字面量，所以每段都按
+/// 「两端去空白」参与拼接。普通语句尾部本来就没有 token，去掉不影响词法。
+fn trim_end_blank(cs : Array[Char], start : Int32, stop : Int32) -> Int32 {
+  let mut end = stop
+  while end > start && is_blank(cs[end - 1]) {
+    end = end - 1
+  }
+  end
+}
+
+///|
+/// 把物理行切成逻辑行（CB-4 的续行实现）。
+///
+/// 列 7 是 `-` 的行是**续行**：它的代码区（列 8..72）接到上一条逻辑行后面，
+/// 再统一做词法。这样长 `PIC` / `VALUE` 可以跨行书写：
+///
+/// ```
+/// 000200    05 A PIC X(10) VALUE 'ABC
+/// 000300-        DEF'.
+/// ```
+///
+/// 拼接规则：续接段先去掉两端空白再直接相接，于是 `'ABC` + `DEF'` 得到
+/// `'ABCDEF'`、`X(` + `5)` 得到 `X(5)`。这是对 COBOL「续行从区 B 起、
+/// 字面量要重开引号」的宽松简化：不需要重开引号，也不需要恰好从列 12 开始。
+///
+/// 边界：
+///   - 自由格式**没有**续行符：行首 `-` 明确报错（不静默当标识符/跳过）；
+///   - 列 7 的 `-` 前面没有可续接的逻辑行 → 报错（否则内容会凭空消失）；
+///   - 注释行与空行结束当前逻辑行（注释不能夹在续行中间）；
+///   - 行尾空白先剥掉，避免把 80 列填充的空格拼进字面量。
+fn collect_code_lines(
+  lines : Array[String],
+  fixed : Bool,
+) -> Array[CodeLine] raise ParseError {
+  let out : Array[CodeLine] = []
+  // 累积中的逻辑行（acc 为空表示没有 pending）
+  let mut acc : Array[Char] = []
+  let mut acc_line = 0
+  let mut acc_base = 0
+  let mut pending = false
+  for idx, raw in lines {
+    let line_no = idx + 1
+    let cs = raw.to_array()
+    let len = cs.length()
+    let mut lo = 0
+    let mut hi = len
+    let mut is_comment = false
+    let mut continuation = false
+    if fixed {
+      if len > 6 && (cs[6] == '*' || cs[6] == '/') {
+        is_comment = true
+      } else {
+        if len > 6 && cs[6] == '-' {
+          continuation = true
+        }
+        lo = 7
+        if hi > 72 {
+          hi = 72
+        }
+      }
+    }
+    // 代码区为空 / 注释行 → 结束当前逻辑行
+    let mut empty = is_comment || lo >= hi
+    if !empty {
+      let fnb = first_non_blank(cs, lo)
+      if fnb >= hi {
+        empty = true
+      } else if cs[fnb] == '*' {
+        // 通用注释：代码区第一个非空白字符是 `*`
+        empty = true
+      } else if !fixed && cs[fnb] == '-' {
+        // 自由格式没有续行符。静默跳过会让内容凭空消失，明确报错。
+        raise LexError(
+          line_no,
+          fnb + 1,
+          "续行符 '-' 只在固定格式的列 7 有效（本文件按自由格式解析）；自由格式请把续接内容写在同一行",
+        )
+      }
+    }
+    if empty {
+      if pending {
+        out.push({
+          line_no: acc_line,
+          text: String::from_array(acc),
+          base_col: acc_base,
+        })
+        acc = []
+        pending = false
+      }
+      continue
+    }
+    // 续行从第一个非空白字符开始（列 8 之后的前导空格不进字面量）；
+    // 首行保持 lo 不变，报错列号才是真实源码列。
+    let start = if continuation { first_non_blank(cs, lo) } else { lo }
+    let stop = trim_end_blank(cs, start, hi)
+    if stop <= start {
+      // 整段空白（例如只写了续行符）—— 不改变当前逻辑行
+      continue
+    }
+    if continuation {
+      if !pending {
+        raise LexError(
+          line_no, 7, "续行符 '-' 前面没有可续接的逻辑行",
+        )
+      }
+      for i = start; i < stop; i = i + 1 {
+        acc.push(cs[i])
+      }
+    } else {
+      if pending {
+        out.push({
+          line_no: acc_line,
+          text: String::from_array(acc),
+          base_col: acc_base,
+        })
+      }
+      acc = []
+      acc_line = line_no
+      acc_base = if fixed { 7 } else { 0 }
+      for i = start; i < stop; i = i + 1 {
+        acc.push(cs[i])
+      }
+      pending = true
+    }
+  }
+  if pending {
+    out.push({
+      line_no: acc_line,
+      text: String::from_array(acc),
+      base_col: acc_base,
+    })
+  }
+  out
+}
+
+///|
 /// 判断某个字符是否允许出现在 PIC 模式串里。
 ///
 /// 覆盖：数字位 `9`/`Z`/`*`、字符位 `X`/`A`、国家字符 `N`、
@@ -393,6 +554,10 @@ fn is_pic_continuation(run : Array[Char]) -> Bool {
 ///
 /// 返回的 token 数组**总是**以 `Eof` 结尾（不抛异常时）。
 /// 出错时抛 `ParseError::LexError(line, column, message)`。
+///
+/// 先由 `collect_code_lines` 把物理行切成逻辑行（固定格式：列 7 指示符、
+/// 列 73-80 忽略、列 7 `-` 续行；自由格式：整行都是代码区），再逐逻辑行
+/// 扫描。续行内容按拼接后的位置递增列号，报错指到被续接的那一行。
 pub fn tokenize(source : StringView) -> Array[Token] raise ParseError {
   // 剥掉 UTF-8 BOM（U+FEFF）。Windows 上的编辑器/PowerShell 重定向经常
   // 把它写进文件头，词法层不处理的话整份 copybook 直接报「无法识别的字符」。
@@ -403,45 +568,27 @@ pub fn tokenize(source : StringView) -> Array[Token] raise ParseError {
   }
   let lines = split_lines(source)
   let fixed = detect_fixed_format(lines)
+  let code_lines = collect_code_lines(lines, fixed)
   let toks : Array[Token] = []
   // 语句起点标记：只有这里的 1-2 位数字才当级别号
   let mut stmt_start = true
   let mut last_line = 1
   let mut last_col = 1
 
-  for idx, raw in lines {
-    let line_no = idx + 1
-    let line = raw
-    let cs = line.to_array()
-    let len = cs.length()
-
-    // ----- 计算代码区 [lo, hi) -----
-    let mut lo = 0
-    let mut hi = len
-    if fixed {
-      if len > 6 && (cs[6] == '*' || cs[6] == '/') {
-        // 第 7 列是指示符 `*` / `/` → 整行注释
-        continue
-      }
-      lo = 7
-      if hi > 72 {
-        hi = 72
-      }
-    }
-    if lo >= hi {
-      continue
-    }
-    // 通用注释判定：代码区第一个非空白字符是 `*`
-    let fnb = first_non_blank(cs, lo)
-    if fnb < hi && cs[fnb] == '*' {
+  for code in code_lines {
+    let line_no = code.line_no
+    let cs = code.text.to_array()
+    let hi = cs.length()
+    let base_col = code.base_col
+    if hi == 0 {
       continue
     }
 
     // ----- 逐字符扫描 -----
-    let mut i = lo
+    let mut i = 0
     while i < hi {
       let c = cs[i]
-      let col = i + 1
+      let col = base_col + i + 1
 
       if is_blank(c) {
         i = i + 1
