@@ -2,7 +2,7 @@
 
 > **这是实现依据，不得更改签名。** 内部实现自由，但这些公开 API 必须存在且签名一致。
 
-模块名：`moonbit-hack/copybook`，库包：`src`，CLI 包：`cmd/copybook`。
+模块名：`NekoYume517/copybook`，库包：`src`，CLI 包：`cmd/copybook`。
 
 ## 1. 编码层 `src/ebcdic.mbt`
 
