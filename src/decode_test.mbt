@@ -461,14 +461,19 @@ test "decode_records 批量解码" {
 }
 
 ///|
-test "decode_records 残缺尾记录报错" {
+test "decode_records 残缺尾记录报 RecordRemainder" {
   let layout = one_numeric(2, 0, false, Display)
   let data = bs([0xF0, 0xF1, 0xF0, 0xF2, 0xF0])
   let r = decode_records(layout, data, 2)
   match r {
     Ok(_) => fail("expected error")
-    Err(RecordTooShort(_, _)) => ()
-    Err(_) => fail("expected RecordTooShort")
+    // 5 字节 = 2 条完整记录 + 1 字节尾巴，不是「记录太短」（CB-5）
+    Err(RecordRemainder(total, record_length, trailing)) => {
+      inspect(total, content="5")
+      inspect(record_length, content="2")
+      inspect(trailing, content="1")
+    }
+    Err(e) => fail("expected RecordRemainder, got " + e.to_display())
   }
 }
 

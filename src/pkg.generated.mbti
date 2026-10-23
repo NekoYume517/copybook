@@ -87,6 +87,7 @@ pub fn unicode_to_ebcdic(Int32) -> Int32?
 // Errors
 pub(all) suberror DecodeError {
   RecordTooShort(Int32, Int32)
+  RecordRemainder(Int32, Int32, Int32)
   InvalidNumeric(Int32, String)
   InvalidEbcdic(Int32, Int32)
   FieldOutOfBounds(String, Int32, Int32)

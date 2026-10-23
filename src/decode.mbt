@@ -177,6 +177,11 @@ pub(all) enum CellValue {
 pub(all) suberror DecodeError {
   /// 记录字节数不足，无法按 layout 解码
   RecordTooShort(Int32, Int32)
+  /// 数据长度不是记录长度的整数倍：尾部残留 `trailing` 字节
+  /// （`total` 总长、`record_length` 记录长度）。必须与 `RecordTooShort`
+  /// 区分：残缺尾记录不是「记录太短」，否则消息会把一条 4 字节记录说成
+  /// 只有 1 字节（CB-5）。
+  RecordRemainder(Int32, Int32, Int32)
   /// 数字字段出现非法半字节 / 符号位
   InvalidNumeric(Int32, String)
   /// 文本字段出现不可打印的 EBCDIC 字节
@@ -191,6 +196,8 @@ pub fn DecodeError::to_display(self : DecodeError) -> String {
   match self {
     RecordTooShort(expected, actual) =>
       "record too short: expected \{expected} bytes, got \{actual}"
+    RecordRemainder(total, record_length, trailing) =>
+      "data length \{total} is not a multiple of record length \{record_length}: \{total / record_length} complete record(s) plus \{trailing} trailing byte(s)"
     InvalidNumeric(offset, detail) =>
       "invalid numeric at offset \{offset}: \{detail}"
     InvalidEbcdic(offset, byte) =>
@@ -846,8 +853,10 @@ pub fn decode_record_ordered(
 ///
 /// 规则：
 ///   - `record_length < layout.byte_length` → RecordTooShort（无法解码）
-///   - `data.length() % record_length != 0` → RecordTooShort（残缺尾记录，
-///     **不**静默丢弃）
+///   - 数据连一条记录都装不满（`total < record_length`）→ RecordTooShort
+///   - `total % record_length != 0`（且至少一条记录）→ RecordRemainder
+///     （残缺尾记录，**不**静默丢弃；消息说明尾随多少字节 / 共多少字节 /
+///     记录长度多少，而不是把它当成「记录太短」）
 ///   - 记录之间**不**做任何对齐填充跳过
 pub fn decode_records(
   layout : RecordLayout,
@@ -862,7 +871,13 @@ pub fn decode_records(
   }
   let total = data.length()
   if total % record_length != 0 {
-    return Err(RecordTooShort(record_length, total % record_length))
+    // 两种残缺形态含义不同：连一条记录都不够 vs 有完整记录 + 尾部残留字节。
+    // 曾经统一报 RecordTooShort(record_length, total % record_length)，
+    // 于是 5 字节 / 记录长 4 被说成「expected 4 bytes, got 1」。
+    if total < record_length {
+      return Err(RecordTooShort(record_length, total))
+    }
+    return Err(RecordRemainder(total, record_length, total % record_length))
   }
   let out : Array[Map[String, CellValue]] = []
   let mut pos = 0

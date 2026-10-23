@@ -232,6 +232,7 @@ pub fn Decimal::from_parts(coef : Int64, scale : Int, neg : Bool) -> Decimal
 
 pub(all) enum DecodeError {
   RecordTooShort(expected : Int, actual : Int)
+  RecordRemainder(total : Int, record_length : Int, trailing : Int)  // 追加（CB-5）
   InvalidNumeric(offset : Int, detail : String)
   InvalidEbcdic(offset : Int, byte : Int)
   FieldOutOfBounds(field : String, offset : Int, length : Int)
@@ -254,6 +255,12 @@ pub fn decode_record_strict(layout : RecordLayout, record : BytesView) -> Result
 规则：
 - zoned decimal：每个字节低 4 位是数字；**最后一个字节的高 4 位是符号**（`0xC`/`0xF` 正，`0xD` 负）。
 - packed decimal（COMP-3）：每字节两半字节；最后一字节低 4 位是符号。
+- 批量解码的残缺数据要区分两种情形（`decode_records`）：
+  - 数据连一条记录都装不满（`total < record_length`）→ `RecordTooShort(record_length, total)`
+  - 有完整记录但长度不是整数倍（尾部残留）→ `RecordRemainder(total, record_length, trailing)`，
+    消息形如 `data length 5 is not a multiple of record length 4: 1 complete record(s) plus 1 trailing byte(s)`。
+    这两种情形含义不同，**不能**都用 `RecordTooShort`（否则一条 4 字节记录会被说成只有 1 字节）。
+    `RecordRemainder` 是对本契约的追加（与 `TokenKind::StringLiteral` 同类），不属于签名变更。
 - COMP 二进制：按字节数用**大端**读取，有符号用补码。**十进制容量按 PIC 声明双向强制**：
   `S9(4) COMP` 的 2 字节容器放得下 32767，但字段声明只有 4 位十进制数，
   所以 decode 与 encode 都会拒绝越界值（报 `InvalidNumeric`，不截断、不静默取值）。
