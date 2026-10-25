@@ -576,8 +576,10 @@ test "redefines.cpy 同段字节两个视图" {
   }
   arr.push(0xC1)
   arr.push(0xC2)
-  // LIMIT-AMT 6 字节 packed: 9 位数字 + 符号
-  for v in ([0x12, 0x34, 0x56, 0x78, 0x9C, 0x0D] : Array[Int32]) {
+  // LIMIT-AMT 6 字节 packed: 11 位数字 + 符号。
+  // P1-1 前这里写的是 9C 0D（C 落在数字位，是非法 packed），测试能过
+  // 只是因为旧宽容分支把目标字段的解错静默置 Null。数据改为合法值。
+  for v in ([0x12, 0x34, 0x56, 0x78, 0x90, 0x1C] : Array[Int32]) {
     arr.push(v)
   }
   // SSN 9 位数字

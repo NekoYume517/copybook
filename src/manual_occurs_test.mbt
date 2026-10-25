@@ -62,7 +62,13 @@ test "manual OCCURS: indexed keys precede first-element bare fallback" {
 test "manual OCCURS: absent or null redefined elements preserve primary bytes" {
   let primary = manual_occurs_layout("X")
   let numeric = manual_occurs_layout("9")
-  let view = { ..numeric.fields[0], name: "B", path: "R.B", redefine_group: 1, }
+  let view = {
+    ..numeric.fields[0],
+    name: "B",
+    path: "R.B",
+    redefine_group: 1,
+    is_redefining: true,
+  }
   let layout = {
     ..primary,
     fields: [primary.fields[0], view],

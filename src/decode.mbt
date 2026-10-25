@@ -790,7 +790,7 @@ fn decode_record_impl(
         match decode_field(elem, record, layout.float_mode) {
           Ok(v) => out[key] = v
           Err(e) =>
-            if strict || field.redefine_group == 0 {
+            if strict || !field.is_redefining {
               return Err(e)
             } else {
               out[key] = Null
@@ -804,7 +804,7 @@ fn decode_record_impl(
     match r {
       Ok(v) => out[field.path] = v
       Err(e) =>
-        if strict || field.redefine_group == 0 {
+        if strict || !field.is_redefining {
           return Err(e)
         } else {
           // 重定义视图解不出：保留键，值为 Null

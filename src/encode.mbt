@@ -597,7 +597,9 @@ fn encode_field(
   }
   // 重定义视图只是同一段字节的另一种读法。缺值/Null 必须保留主视图字节，
   // 不能写零或空格；在单字段入口统一处理，也覆盖手工 OCCURS 的逐元素编码。
-  if field.redefine_group != 0 && v is Null {
+  // 判定用 is_redefining（自身声明了 REDEFINES）：目标字段虽然与视图共享
+  // 非零 redefine_group，但它是字节的原主，缺值时必须写默认值（P1-1）。
+  if field.is_redefining && v is Null {
     return Ok(())
   }
   match pic.category {
