@@ -766,12 +766,16 @@ fn decode_record_impl(
     return Err(RecordTooShort(layout.byte_length, record.length()))
   }
   let out : Map[String, CellValue] = Map([])
-  // 宽容解码在布局存在「尾部空洞」（只有重定义视图覆盖的区间，见
-  // primary_tail_gaps）时，把原始记录字节挂在保留键上：render_jsonl 据此
-  // 带出 __tail_hex，encode_record 据此在内存路径回填空洞（CB-9）。
+  // 宽容解码在布局存在字节空洞时，把原始记录字节挂在保留键上：
+  //   - 「尾部空洞」（只有重定义视图覆盖的区间，见 primary_tail_gaps）
+  //     → render_jsonl 据此带出 __tail_hex，encode_record 据此在内存路径
+  //     回填空洞（CB-9）；
+  //   - 「中部空洞」（主视图字段之间的 FILLER 区，见 filler_gaps，P1-2）
+  //     → render_jsonl 据此带出 __filler_hex，encode_record 同样回填。
   // 没有空洞的布局不附加——decode 结果的键集合与旧版完全一致。
   // 严格解码不需要——任何视图失败直接报错，不存在丢信息的视图。
-  if !strict && primary_tail_gaps(layout).length() > 0 {
+  if !strict &&
+    primary_tail_gaps(layout).length() + filler_gaps(layout).length() > 0 {
     out["__record_bytes"] = Bytes(record.to_bytes())
   }
   for field in layout.fields {

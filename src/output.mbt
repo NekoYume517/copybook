@@ -122,6 +122,49 @@ fn layout_tail_gap_bytes(
 }
 
 ///|
+/// 中部空洞旁路（P1-2）：FILLER 占据的区间（或手工布局的裂缝）不属于
+/// 任何字段，decode 结果里没有承载，JSONL 必须把它带出去才能字节保真。
+/// 与 layout_tail_gap_bytes 同一手法：区间并集 → 从 `__record_bytes`
+/// 取字节 → 小写十六进制；全 0x40（未赋值工作存储区惯例）不携带。
+fn layout_filler_gap_bytes(
+  layout : RecordLayout,
+  row : Map[String, CellValue],
+) -> String? {
+  let gaps = filler_gaps(layout)
+  if gaps.length() == 0 {
+    return None
+  }
+  let record : BytesView = match row.get("__record_bytes") {
+    Some(Bytes(bs)) => bs
+    _ => return None
+  }
+  for (s, e) in gaps {
+    if e > record.length() {
+      return None
+    }
+    ignore(s)
+  }
+  let sb = StringBuilder()
+  let mut uniform_space = true
+  let mut any = false
+  for (s, e) in gaps {
+    for i = s; i < e; i = i + 1 {
+      let v = record[i].to_int()
+      if v != 0x40 {
+        uniform_space = false
+      }
+      any = true
+      sb.write_string(hex_lower((v >> 4) & 0xF))
+      sb.write_string(hex_lower(v & 0xF))
+    }
+  }
+  if !any || uniform_space {
+    return None
+  }
+  Some(sb.to_string())
+}
+
+///|
 /// JSONL：每行一个 JSON 对象，键是字段路径。
 ///
 /// 每行以 `\n` 结尾（包括最后一行）—— 这是 JSONL 的通行约定，也是
@@ -199,6 +242,16 @@ pub fn render_jsonl(
     let tail = layout_tail_gap_bytes(layout, row)
     if tail is Some(hex) {
       obj["__tail_hex"] = Json::string(hex)
+    }
+    // **中部空洞旁路**（P1-2）：FILLER 占字节但不进输出（布局层契约），
+    // 这段字节在字段值里没有载体，重编码时会被 Writer 初始的 0x40 静默
+    // 替换（C1 C2 C3 C4 C5 C6 → C1 C2 40 40 C5 C6，verify 自身 exit 1）。
+    // 与 __tail_hex 同一手法：`__filler_hex` 按偏移序携带空洞字节，
+    // parse_jsonl_row / encode_record 回填。全 0x40 不携带——普通记录
+    // （无 FILLER 或 FILLER 全空格）的 JSONL 输出保持不变。
+    let filler = layout_filler_gap_bytes(layout, row)
+    if filler is Some(hex) {
+      obj["__filler_hex"] = Json::string(hex)
     }
     sb.write_string(Json::object(obj).stringify())
     sb.write_char('\n')

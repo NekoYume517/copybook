@@ -124,6 +124,17 @@ pub fn parse_jsonl_row(
           }
         _ => ()
       }
+      // 中部空洞旁路（P1-2）：render_jsonl 写出的 `__filler_hex` 在这里
+      // 还原成 Bytes，由 encode_record 在写完全部字段后回填 FILLER 区。
+      // 没有这个键时行为与旧版完全一致。
+      match obj.get("__filler_hex") {
+        Some(Json::String(h)) =>
+          match hex_to_bytes(h) {
+            Some(bs) => out["__filler_hex"] = Bytes(bs)
+            None => ()
+          }
+        _ => ()
+      }
       Ok(out)
     }
     _ => Err("JSONL line must be an object")

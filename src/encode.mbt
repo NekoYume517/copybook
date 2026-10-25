@@ -824,6 +824,41 @@ fn primary_tail_gaps(layout : RecordLayout) -> Array[(Int32, Int32)] {
 }
 
 ///|
+/// 计算布局的「中部空洞」：叶子字段覆盖区间之间的缝隙——典型形态是
+/// `01 R. 05 A PIC X(2). 05 FILLER PIC X(2). 05 B PIC X(2).` 里 FILLER
+/// 占据的 2..4。FILLER 不进 layout.fields（布局层契约），这段字节在
+/// decode 结果里没有任何字段承载，encode 只能落 Writer 初始的 0x40，
+/// 原始字节被静默替换（P1-2）。
+///
+/// 算法：把**全部叶子字段**（含重定义视图——视图与主视图共享字节，
+/// 不产生额外缝隙）的区间按偏移合并，0..byte_length 中未被覆盖的
+/// 区间即空洞。与 RecordLayout::covered_bytes 的区间合并同构。
+/// 手工构造布局的裂缝同样命中：数据面丢字节的位置就是这里报出的位置。
+fn filler_gaps(layout : RecordLayout) -> Array[(Int32, Int32)] {
+  let ivs : Array[(Int32, Int32)] = []
+  for f in layout.fields {
+    ivs.push((f.offset, f.offset + f.total_length))
+  }
+  ivs.sort_by(fn(x, y) { x.0 - y.0 })
+  let gaps : Array[(Int32, Int32)] = []
+  let mut cur = 0
+  for iv in ivs {
+    let (s, e) = iv
+    let s0 = if s > layout.byte_length { layout.byte_length } else { s }
+    if s0 > cur {
+      gaps.push((cur, s0))
+    }
+    if e > cur {
+      cur = e
+    }
+  }
+  if cur < layout.byte_length {
+    gaps.push((cur, layout.byte_length))
+  }
+  gaps
+}
+
+///|
 /// 编码一条记录。
 ///
 /// 缺失的字段按 `Null` 处理：
@@ -885,26 +920,45 @@ pub fn encode_record(
       Err(e) => return Err(e)
     }
   }
-  // 尾部空洞回填（CB-9）：`__tail_hex`（JSONL 路径，render_jsonl 带出、
-  // parse_jsonl_row 还原）或 `__record_bytes`（内存路径，宽容解码附带）承载
-  // 「只有重定义视图覆盖」的原始字节。字段全部写完后按空洞区间原样写回，
-  // `12 3C FF EE` 不再被静默改写成 `12 3C 40 40`。
+  // 空洞回填：原始字节由旁路键承载，字段全部写完后按空洞区间原样写回。
+  //   - 尾部空洞（CB-9，只有重定义视图覆盖的区间）：`__tail_hex`
+  //     （JSONL 路径，render_jsonl 带出、parse_jsonl_row 还原）或
+  //     `__record_bytes`（内存路径，宽容解码附带）。`12 3C FF EE`
+  //     不再被静默改写成 `12 3C 40 40`。
+  //   - 中部空洞（P1-2，FILLER 区 / 叶子字段之间的裂缝）：`__filler_hex`
+  //     （JSONL 路径）或同一份 `__record_bytes`（内存路径）。FILLER 区的
+  //     `C1 C2 C3 C4 C5 C6` 不再变 `C1 C2 40 40 C5 C6`。
   let tail : Bytes? = match values.get("__tail_hex") {
     Some(Bytes(bs)) => Some(bs)
     _ =>
-      match values.get("__record_bytes") {
+      match values.get("__filler_hex") {
         Some(Bytes(bs)) => Some(bs)
-        _ => None
+        _ =>
+          match values.get("__record_bytes") {
+            Some(Bytes(bs)) => Some(bs)
+            _ => None
+          }
       }
   }
   match tail {
     Some(bs) => {
-      let gaps = primary_tail_gaps(layout)
-      // JSONL 路径：__tail_hex 只含空洞字节，从头按区间回填。
-      // 内存路径：__record_bytes 是整条记录，空洞字节在各自绝对位置。
-      let from_jsonl = values.get("__tail_hex") is Some(_)
+      // JSONL 路径的旁路键只含空洞字节，从头按区间回填；
+      // 内存路径的 __record_bytes 是整条记录，字节在各自绝对位置。
+      let from_jsonl = values.get("__tail_hex") is Some(_) ||
+        values.get("__filler_hex") is Some(_)
       let mut idx = 0
-      for (s, e) in gaps {
+      for (s, e) in primary_tail_gaps(layout) {
+        let mut i = s
+        while i < e {
+          let src = if from_jsonl { idx } else { i }
+          if src < bs.length() {
+            w.set(i, bs[src].to_int())
+          }
+          idx = idx + 1
+          i = i + 1
+        }
+      }
+      for (s, e) in filler_gaps(layout) {
         let mut i = s
         while i < e {
           let src = if from_jsonl { idx } else { i }

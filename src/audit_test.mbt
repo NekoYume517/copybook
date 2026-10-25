@@ -101,11 +101,13 @@ test "audit: FILLER 占字节但不进入解码输出" {
     }
   }
   inspect(has_filler, content="false")
-  // 解码结果里没有 FILLER 键
+  // 解码结果里没有 FILLER 键。注意 FILLER 字节走旁路：宽容解码会附加
+  // 保留键 __record_bytes（本例 FILLER 全 0x40，render_jsonl 不再派生
+  // __filler_hex；P1-2 之前没有这个旁路键，map 里只有两个数据字段）。
   let rec : Bytes = b"\xC1\xC2\x40\x40\x40\xF4\xF2"
   let m = decode_record(layout, rec).unwrap()
   assert_true(m.get("R.FILLER") is None)
-  inspect(m.length(), content="2")
+  inspect(m.length(), content="3")
   match m.get("R.A") {
     Some(Text(s)) => inspect(s, content="AB")
     _ => fail("R.A")
@@ -129,7 +131,8 @@ test "audit: 多个 FILLER 字段不互相干扰" {
   let rec : Bytes = b"\x40\x40\xF1\xF2\x40\xC3"
   let m = decode_record(layout, rec).unwrap()
   assert_true(m.get("R.FILLER") is None)
-  inspect(m.length(), content="2")
+  // 两个数据字段 + __record_bytes 旁路（中部有 FILLER 空洞，见 P1-2）
+  inspect(m.length(), content="3")
   match m.get("R.B") {
     Some(Text(s)) => inspect(s, content="C")
     _ => fail("R.B")
