@@ -248,7 +248,9 @@ pub fn decode_record_ordered(layout : RecordLayout, record : BytesView) -> Resul
 pub fn decode_records(layout : RecordLayout, data : BytesView, record_length : Int) -> Result[Array[Map[String, CellValue]], DecodeError]
 
 /// 严格版 decode_record：任何视图（含 REDEFINES 重定义视图）
-/// 解码失败都报错；供 verify 与单元测试使用
+/// 解码失败都报错；供单元测试使用。
+/// 注意：`verify`（roundtrip_check）实际使用宽容版 decode_record
+/// （主视图失败照样报错、重定义视图失败置 Null），并非本函数。
 pub fn decode_record_strict(layout : RecordLayout, record : BytesView) -> Result[Map[String, CellValue], DecodeError]
 ```
 

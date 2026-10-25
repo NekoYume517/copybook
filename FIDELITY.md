@@ -103,6 +103,7 @@ IBM HFP 没有 IEEE 那种「负零是特殊值」的语义，但**符号位仍�
 | 浮点格式（HFP / IEEE） | `RecordLayout.float_mode` | 数值完全错误 |
 | 字段宽度与偏移 | `FieldLayout`（布局层算出） | 记录错位 |
 | `FILLER` 占位 | 布局层推进游标，但不进输出 | 后续字段全部偏移错 |
+| **REDEFINES 尾部空洞**（只有重定义视图覆盖、且该视图解不出的字节） | `__tail_hex`（JSONL 旁路）/ `__record_bytes`（内存路径） | `FF EE` 被静默改写成 `40 40` |
 
 **负零为什么单独列一行**：整数型的 `0` 与 `-0` 数值相等，但 zoned / packed 的符号半字节不同，字节也就不同。走 `decode → JSONL → encode` 时，文本这一环靠不住——JSON 的数字是 double，`-0` 经核心 JSON 词法后原文不保留，放手写的 `-0` 也可能被折叠成 `0`。所以 **JSONL 里的 `__nibbles.sign` 是符号的权威来源**：`0xD` 就是负号，系数为 0 时同样生效。修复前这条旁路只被当作"写回哪个半字节"的提示，`decode` 出 `-0`、`encode` 回 `+0`，而 `verify`（内存路径，`Decimal.negative` 没丢）还报 `byte-identical roundtrip` —— 两条路径互相矛盾。回归测试在 `src/negative_zero_test.mbt`，同时锁定文本链路与 `verify` 两条路径的结论一致。
 
@@ -157,7 +158,11 @@ IBM HFP 的 `COMP-2` 尾数是 **56 位**，比 IEEE `double` 的 53 位多 3 �
 
 ### 5.4 严格性选择
 
-`decode_record`（宽容版）对 **REDEFINES 视图**解码失败只填 `Null` 不报错；`decode_record_strict`（严格版）任何视图失败都报错。`verify` 用严格版——想证明"整条记录每个字节都自洽"时必须用它。
+`decode_record`（宽容版）对 **REDEFINES 视图**解码失败只填 `Null` 不报错；`decode_record_strict`（严格版）任何视图失败都报错。**`verify`（roundtrip_check）用的是宽容版**——主视图失败照样报错（数据真坏了），重定义视图失败置 Null、由尾部字节旁路（`__tail_hex`）保住超出主视图的字节；这与本文件第 3 节的保真机制配套。`decode_record_strict` 留给想证明「每个视图都自洽」的调用方。
+
+### 5.5 REDEFINES 尾部空洞
+
+重定义视图可以比主视图长（布局层把记录延长到 `max(主视图, 视图)`）。超出主视图的字节只有重定义视图覆盖；当该视图解不出（置 `Null`）时，这些字节由 `__tail_hex` 旁路携带：`render_jsonl` 以小写十六进制写出（全 `0x40` 空格填充除外——那是「未赋值工作存储区」惯例），`parse_jsonl_row` / `encode_record` 按空洞区间原样回填。主视图字段之间的**中部**空洞（FILLER、手工布局裂缝）不在此保真范围内，见第 3 节 FILLER 说明。
 
 ---
 
