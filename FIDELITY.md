@@ -123,6 +123,7 @@ IBM HFP 没有 IEEE 那种「负零是特殊值」的语义，但**符号位仍�
 | packed，**无符号**（`PIC 9(n) COMP-3`），正 | `0xF`（IBM 标准约定，不是 `0xC`） |
 | zoned，正 | `0xF` |
 | zoned，负 | `0xD` |
+| zoned，**无符号**（`PIC 9(n)`），正 | `0xF`（标准未符号化形态；但读到末字节 `0xC` 区号时**原样保留**——主机实务常见同一份数据按 `S9` 与 `9` 两种 copybook 解释，`F1 F2 C3` 也是合法字节。decode 对这种情况产出 `Decimal` 并带 `sign_nibble=C` 走 `__nibbles` 旁路，而不是丢进 `Int`；`0xF` 区号仍走 `Int`，普通数据的 JSONL 形态不变） |
 | packed 填充半字节 | `0x0` |
 | 文本不足宽度 | 补空格 `0x40` |
 

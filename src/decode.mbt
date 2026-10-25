@@ -674,8 +674,14 @@ fn decode_field(
           )
           match r {
             Ok(d) =>
-              // scale == 0 时用 Int 表示整数，避免下游把整数当小数处理
-              if pic.scale == 0 && !pic.signed {
+              // scale == 0 的无符号整数用 Int 表示，避免下游把整数当小数
+              // 处理——但**末字节区号非 F 时例外**（P1-3）：主机实务里无符号
+              // 字段常被写 C 区号（同一份数据按 S9 与 9 两种 copybook 解释），
+              // Int 承载会丢 sign_nibble，encode 只能默认写 F，往返变
+              // F1 F2 F3 ≠ 原始 F1 F2 C3。保留 Decimal 让 nibble 走
+              // __nibbles 旁路；标准 F 区号（未符号化）仍走 Int，普通数据
+              // 的 JSONL 形态不变。
+              if pic.scale == 0 && !pic.signed && d.sign_nibble != Some(0xC) {
                 Ok(Int(d.coefficient))
               } else {
                 Ok(Decimal(d))
