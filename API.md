@@ -341,6 +341,15 @@ copybook verify --copybook <file.cpy> --data <file.dat>     # 往返自检
 
 退出码：0 成功，1 数据错误，2 用法错误。
 
+`--record-length N` 语义：按 N 字节切分数据文件，每条记录按布局解码
+前 `布局长度` 字节；`N < 布局长度` 是用法错误（exit 2）；`N > 布局长度`
+时每条记录**超出布局的尾部字节被跳过**（适合 RDW/BDW 头或自定义填充），
+`encode` 不会还原这些字节（输出记录长恒等于布局长度）——decode 会在
+stderr 打一条 warning 说明每条跳过多少字节，退出码仍为 0。
+
+空数据文件对 decode / verify 都 exit 1（"data file ... is empty"），
+不是「成功处理了 0 条记录」。
+
 ## 8. 测试要求
 
 至少覆盖：

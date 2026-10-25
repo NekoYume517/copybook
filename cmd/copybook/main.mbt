@@ -351,6 +351,15 @@ fn cmd_decode(opts : Options) -> Int32 {
     )
     return EXIT_USAGE
   }
+  // --record-length 大于布局长度：每条记录的尾部（rec_len - 布局长度）字节
+  // 不属于任何字段，解码跳过、重编码也不会还原。这是 RDW/BDW 头或自定义
+  // 填充的合法用法，但静默截尾会让「8 字节数据每条丢 1 字节」无迹可查——
+  // 明确警告一次（不改变退出码：解码本身仍逐条成功）。
+  if rec_len > layout.byte_length {
+    eprintln(
+      "warning: --record-length \{rec_len} exceeds the layout length \{layout.byte_length}; the trailing \{rec_len - layout.byte_length} byte(s) of each record are outside the copybook and are skipped on decode (they are NOT restored by encode)",
+    )
+  }
   // 空文件不是「成功解码了 0 条记录」，而是没有数据可解。
   // 静默返回 0 会让调用方（尤其是脚本）误以为文件正常。
   if data.length() == 0 {
@@ -505,6 +514,15 @@ fn cmd_verify(opts : Options) -> Int32 {
   // 方式暴露。空布局意味着「没有任何数据契约」，verify 对它无事可做。
   if rec_len == 0 {
     eprintln("verify: layout has zero length (no fields); nothing to verify")
+    return EXIT_DATA
+  }
+  // 空文件不是「成功校验了 0 条记录」，而是没有数据可校验——与 decode
+  // 的空数据分支（main.mbt decode 侧）同一措辞与退出码，避免脚本把
+  // 「verify: 0 record(s) OK」误读为文件正常。
+  if data.length() == 0 {
+    eprintln(
+      "verify: data file '\{data_path}' is empty (expected \{rec_len}-byte records)",
+    )
     return EXIT_DATA
   }
   if data.length() % rec_len != 0 {
