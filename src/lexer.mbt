@@ -228,6 +228,35 @@ fn is_blank(c : Char) -> Bool {
 }
 
 ///|
+/// 判断累积中的逻辑行是否有未闭合的引号（' 与 " 各自计数，双写转义
+/// 不算重新开引号——COBOL 字面量不允许跨行重开同类引号外的第二种引号，
+/// 这里只需可靠的「是否在字面量内」信号，供续行拼接决定是否补空格）。
+fn has_unclosed_quote(cs : Array[Char]) -> Bool {
+  let mut sq = 0
+  let mut dq = 0
+  let mut i = 0
+  while i < cs.length() {
+    let c = cs[i]
+    if c == '\'' {
+      // 双写转义：'' 与 "" 都是字面量内容，不改变开/闭状态
+      if i + 1 < cs.length() && cs[i + 1] == '\'' {
+        i = i + 2
+        continue
+      }
+      sq = sq + 1
+    } else if c == '"' {
+      if i + 1 < cs.length() && cs[i + 1] == '"' {
+        i = i + 2
+        continue
+      }
+      dq = dq + 1
+    }
+    i = i + 1
+  }
+  sq % 2 == 1 || dq % 2 == 1
+}
+
+///|
 /// COBOL 名字字符：字母、数字、连字符（COBOL 2014 起允许下划线）
 fn is_name_char(c : Char) -> Bool {
   (c >= 'A' && c <= 'Z') ||
@@ -448,6 +477,30 @@ fn collect_code_lines(
         raise LexError(
           line_no, 7, "续行符 '-' 前面没有可续接的逻辑行",
         )
+      }
+      // 词间断行必须补一个空格（P2-3）：`000200 05 A PIC` + `000300- X(10).`
+      // 直接相接会拼成 `PICX`（报错且无指向）。判定：拼接点两侧是
+      // 「字母×字母」或「字母×数字」的组合——标识符/关键字允许内嵌数字，
+      // `OCCURS` + `3` 粘成 `OCCURS3` 同样是词粘连；唯独「数字×数字」
+      // 豁免（`X(1` + `2` → `X(12)` 是 continuation_test 锁定的既有契约，
+      // 且数字串只可能是字面量/位数，不存在词边界）。字面量内拼接
+      // （'ABC + DEF'）由未闭合引号判定豁免，零相接不变。
+      fn wordish(c : Char) -> Bool {
+        is_ascii_letter(c) || is_digit_char(c)
+      }
+      let in_literal = has_unclosed_quote(acc)
+      let both_alpha = acc.length() > 0 &&
+        start < stop &&
+        is_ascii_letter(acc[acc.length() - 1]) &&
+        is_ascii_letter(cs[start])
+      let mixed = acc.length() > 0 &&
+        start < stop &&
+        wordish(acc[acc.length() - 1]) &&
+        wordish(cs[start]) &&
+        !(is_digit_char(acc[acc.length() - 1]) && is_digit_char(cs[start]))
+      let joins_words = !in_literal && (both_alpha || mixed)
+      if joins_words {
+        acc.push(' ')
       }
       for i = start; i < stop; i = i + 1 {
         acc.push(cs[i])
