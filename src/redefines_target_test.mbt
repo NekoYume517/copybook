@@ -82,7 +82,10 @@ test "P1-1: corrupt REDEFINES target fails strict decode and roundtrip" {
   let layout = p11_layout()
   let bad = p11_record([0xAB, 0xCD, 0x56, 0x78, 0x90, 0x1D])
   // 严格解码报错
-  assert_true(decode_record_strict(layout, bad).is_err())
+  match decode_record_strict(layout, bad) {
+    Err(_) => ()
+    Ok(_) => fail("strict decode must fail on corrupt target field")
+  }
   // verify 核心：roundtrip_check 走宽容解码，必须同样报错
   match roundtrip_check(layout, bad) {
     Err(_) => ()
