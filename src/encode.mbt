@@ -793,6 +793,35 @@ fn pow10(scale : Int32) -> Double {
 }
 
 ///|
+/// 是否主视图字段：自身未声明 REDEFINES。目标字段虽然也拿到非零
+/// `redefine_group`（与视图共享 id），但它是字节的原主，仍是主视图。
+fn field_is_primary(field : FieldLayout) -> Bool {
+  !field.is_redefining
+}
+
+///|
+/// 计算布局的「尾部空洞」：所有主视图字段结束之后仍属于记录长度的区间——
+/// 只有重定义**视图**（自身声明了 REDEFINES 的项）才覆盖的字节。与
+/// `layout_tail_gap_bytes`（output 层）同一套区间逻辑。
+fn primary_tail_gaps(layout : RecordLayout) -> Array[(Int32, Int32)] {
+  let mut primary_end = 0
+  let mut has_primary = false
+  for field in layout.fields {
+    if field_is_primary(field) {
+      let e = field.offset + field.total_length
+      if !has_primary || e > primary_end {
+        primary_end = e
+      }
+      has_primary = true
+    }
+  }
+  if !has_primary || primary_end >= layout.byte_length {
+    return []
+  }
+  [(primary_end, layout.byte_length)]
+}
+
+///|
 /// 编码一条记录。
 ///
 /// 缺失的字段按 `Null` 处理：
@@ -853,6 +882,39 @@ pub fn encode_record(
       Ok(_) => ()
       Err(e) => return Err(e)
     }
+  }
+  // 尾部空洞回填（CB-9）：`__tail_hex`（JSONL 路径，render_jsonl 带出、
+  // parse_jsonl_row 还原）或 `__record_bytes`（内存路径，宽容解码附带）承载
+  // 「只有重定义视图覆盖」的原始字节。字段全部写完后按空洞区间原样写回，
+  // `12 3C FF EE` 不再被静默改写成 `12 3C 40 40`。
+  let tail : Bytes? = match values.get("__tail_hex") {
+    Some(Bytes(bs)) => Some(bs)
+    _ =>
+      match values.get("__record_bytes") {
+        Some(Bytes(bs)) => Some(bs)
+        _ => None
+      }
+  }
+  match tail {
+    Some(bs) => {
+      let gaps = primary_tail_gaps(layout)
+      // JSONL 路径：__tail_hex 只含空洞字节，从头按区间回填。
+      // 内存路径：__record_bytes 是整条记录，空洞字节在各自绝对位置。
+      let from_jsonl = values.get("__tail_hex") is Some(_)
+      let mut idx = 0
+      for (s, e) in gaps {
+        let mut i = s
+        while i < e {
+          let src = if from_jsonl { idx } else { i }
+          if src < bs.length() {
+            w.set(i, bs[src].to_int())
+          }
+          idx = idx + 1
+          i = i + 1
+        }
+      }
+    }
+    None => ()
   }
   Ok(w.to_bytes())
 }

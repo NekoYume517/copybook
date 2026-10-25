@@ -52,6 +52,11 @@ pub(all) struct FieldLayout {
   pic : PicClause
   level : Int32
   redefine_group : Int32
+  /// 自身声明了 REDEFINES（是重定义**视图**）。目标字段虽然也拿到非零
+  /// `redefine_group`（与视图共享 id），但它是字节的原主，`false`。
+  /// decode/encode 的「主视图优先、视图失败置 Null」判定用它，而不是
+  /// `redefine_group == 0`——后者会把 REDEFINES 的目标也误判成视图。
+  is_redefining : Bool
 }
 
 ///|
@@ -379,6 +384,7 @@ fn compile_field(
   path_prefix : String,
   groups : Map[String, Int32],
   inherited_group : Int32,
+  inherited_redefining : Bool,
 ) -> Int32 raise ParseError {
   let save = b.cursor
   // 自身被登记为重定义成员则用自身 id，否则继承父组 id（REDEFINES 组的子项
@@ -387,6 +393,9 @@ fn compile_field(
     Some(id) => id
     None => inherited_group
   }
+  // 视图身份同样继承：REDEFINES 组的子项与组共享同一段字节，都是视图。
+  // 目标字段的子项保持 false（目标是字节的原主）。
+  let is_redefining = spec.redefines is Some(_) || inherited_redefining
   // REDEFINES：把游标挪回目标字段的偏移，让两者共享同一段字节。
   match spec.redefines {
     Some(target_name) => {
@@ -436,6 +445,7 @@ fn compile_field(
         pic,
         level: spec.level,
         redefine_group: group_id,
+        is_redefining,
       }
       if occurs > 1 {
         // 展开成 occurs 份独立叶子：offset 逐元素推进，键带 1 起始下标，
@@ -493,7 +503,7 @@ fn compile_field(
       let leaf_mark = b.leaves.length()
       let all_mark = b.all.length()
       for child in spec.children {
-        let _ = compile_field(b, child, path, groups, group_id)
+        let _ = compile_field(b, child, path, groups, group_id, is_redefining)
       }
       let inner = b.cursor - field_base
       let total = checked_mul(inner, occurs, "group '\{spec.name}'")
@@ -544,6 +554,7 @@ fn compile_field(
         pic: group_pic(inner),
         level: spec.level,
         redefine_group: group_id,
+        is_redefining,
       }
       b.all.push(fl)
       b.by_name[spec.name.to_lower()] = field_base
@@ -583,7 +594,7 @@ pub fn compile_layout(
     if record_name == "" {
       record_name = spec.name
     }
-    let _ = compile_field(b, spec, "", groups, 0)
+    let _ = compile_field(b, spec, "", groups, 0, false)
   }
   // 叶子按偏移排序（稳定：同偏移保持定义顺序，便于 REDEFINES 可预测）
   let leaves = b.leaves

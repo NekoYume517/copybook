@@ -145,6 +145,7 @@ pub(all) struct FieldLayout {
   pic : PicClause
   level : Int32
   redefine_group : Int32
+  is_redefining : Bool
 }
 
 pub(all) struct FieldSpec {

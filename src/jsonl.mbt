@@ -113,10 +113,53 @@ pub fn parse_jsonl_row(
           None => ()
         }
       }
+      // 尾部字节旁路（CB-9）：render_jsonl 写出的 `__tail_hex` 在这里还原成
+      // Bytes，键名不变，由 encode_record 在写完全部字段后原样回填到
+      // 「只有重定义视图覆盖」的空洞区间。没有这个键时行为与旧版完全一致。
+      match obj.get("__tail_hex") {
+        Some(Json::String(h)) =>
+          match hex_to_bytes(h) {
+            Some(bs) => out["__tail_hex"] = Bytes(bs)
+            None => ()
+          }
+        _ => ()
+      }
       Ok(out)
     }
     _ => Err("JSONL line must be an object")
   }
+}
+
+///|
+/// 小写/大写十六进制串 → Bytes。长度非偶或含非十六进制字符返回 None。
+fn hex_to_bytes(h : String) -> Bytes? {
+  let cs = h.to_array()
+  if cs.length() % 2 != 0 {
+    return None
+  }
+  fn nib(c : Char) -> Int32? {
+    if c >= '0' && c <= '9' {
+      Some(c.to_int() - '0'.to_int())
+    } else if c >= 'a' && c <= 'f' {
+      Some(c.to_int() - 'a'.to_int() + 10)
+    } else if c >= 'A' && c <= 'F' {
+      Some(c.to_int() - 'A'.to_int() + 10)
+    } else {
+      None
+    }
+  }
+  let out : Array[Byte] = []
+  let mut i = 0
+  while i < cs.length() {
+    let hi = nib(cs[i])
+    let lo = nib(cs[i + 1])
+    match (hi, lo) {
+      (Some(a), Some(b)) => out.push(((a << 4) | b).to_byte())
+      _ => return None
+    }
+    i = i + 2
+  }
+  Some(Bytes::from_array(out))
 }
 
 ///|

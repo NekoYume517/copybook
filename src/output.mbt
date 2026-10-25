@@ -72,6 +72,56 @@ fn hex_lower(v : Int32) -> String {
 }
 
 ///|
+/// 计算一条记录里「只有重定义视图覆盖」的**尾部**字节区间（所有主视图字段
+/// 结束之后、记录长度之前的部分，见 encode 层 `primary_tail_gaps`），并从
+/// `row` 携带的原始记录字节（`__record_bytes`，由宽容解码在布局存在尾部
+/// 空洞时写入）中取出这段字节，渲染为小写十六进制串。
+///
+/// 返回 `None` 的情形：没有尾部空洞 / 空洞字节全为 0x40（未赋值工作存储区
+/// 惯例，不携带信息）/ 没有原始字节信息（手写 JSON、非 decode 来源——
+/// encode 会按惯例写 0x40）。全 0x00 **会**带出：0x00 与 0x40 字节不同，
+/// 静默改写同样是数据损坏。
+fn layout_tail_gap_bytes(
+  layout : RecordLayout,
+  row : Map[String, CellValue],
+) -> String? {
+  let gaps = primary_tail_gaps(layout)
+  if gaps.length() == 0 {
+    return None
+  }
+  // 原始记录字节：宽容解码在布局有尾部空洞时把整个 BytesView 挂在保留键上
+  let record : BytesView = match row.get("__record_bytes") {
+    Some(Bytes(bs)) => bs
+    _ => return None
+  }
+  // 空洞必须完整落在原始记录内
+  for (s, e) in gaps {
+    if e > record.length() {
+      return None
+    }
+    ignore(s)
+  }
+  let sb = StringBuilder()
+  let mut uniform_space = true
+  let mut any = false
+  for (s, e) in gaps {
+    for i = s; i < e; i = i + 1 {
+      let v = record[i].to_int()
+      if v != 0x40 {
+        uniform_space = false
+      }
+      any = true
+      sb.write_string(hex_lower((v >> 4) & 0xF))
+      sb.write_string(hex_lower(v & 0xF))
+    }
+  }
+  if !any || uniform_space {
+    return None
+  }
+  Some(sb.to_string())
+}
+
+///|
 /// JSONL：每行一个 JSON 对象，键是字段路径。
 ///
 /// 每行以 `\n` 结尾（包括最后一行）—— 这是 JSONL 的通行约定，也是
@@ -138,6 +188,17 @@ pub fn render_jsonl(
     }
     if nib.size() > 0 {
       obj["__nibbles"] = Json::object(nib)
+    }
+    // **尾部字节旁路**（CB-9）：REDEFINES 视图可以比主视图长（布局层把记录
+    // 延长到 max(主, 视图)），而宽容解码对解不出的重定义视图置 Null、encode
+    // 又跳过 Null 视图——于是「只有重定义视图覆盖」的尾部字节没有任何载体，
+    // 重编码时被 Writer 初始的 0x40 静默改写（`12 3C FF EE` → `12 3C 40 40`）。
+    // 与 __nibbles 同一手法：用保留键 `__tail_hex` 把这段字节以十六进制带出，
+    // encode 前由 parse_jsonl_row 还原。全 0x40（未赋值工作存储区惯例）不携带
+    // 信息，跳过——普通记录的 JSONL 输出保持不变。
+    let tail = layout_tail_gap_bytes(layout, row)
+    if tail is Some(hex) {
+      obj["__tail_hex"] = Json::string(hex)
     }
     sb.write_string(Json::object(obj).stringify())
     sb.write_char('\n')
