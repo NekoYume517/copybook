@@ -504,11 +504,26 @@ fn decode_binary(
   for i = 0; i < storage_digits; i = i + 1 {
     dec_limit = dec_limit * 10L
   }
-  if raw >= dec_limit {
+  // **两侧必须对称**（CB-18）：`PIC S9(9)/S9(18) COMP` 的容器比声明的十进制
+  // 位数宽（4 字节能存 -2147483648 的 10 位、8 字节能存 -2^63 的 19 位）。
+  // 取绝对值时 `|-2^63|` 在 Int64 里回绕成负数（补码没有 +2^63），旧的
+  // `raw >= dec_limit` 对负数恒假 → `80 00 00 00 00 00 00 00` 被当成合法的
+  // `-9223372036854775808` 输出，而 encode 一侧会拒绝同一份数据，verify 因此
+  // 报错 —— 两个方向给出互相矛盾的结论。
+  // `raw < 0` 只可能来自这次回绕（原值是 n 字节无符号模式，且 8 字节的
+  // 0x80.. 已被上面的补码分支处理），其真实数值是 `-(|raw| + 2^63)`，
+  // 必然超过任何 ≤ 10^18 - 1 的上限。用 int64_abs_string 把回绕后的位模式
+  // 渲染回可读的十进制（`raw == Int64::MIN` 时正是 -9223372036854775808）。
+  if raw < 0L || raw >= dec_limit {
+    let shown = if raw < 0L {
+      "-" + int64_abs_string(raw)
+    } else {
+      raw.to_string()
+    }
     return Err(
       InvalidNumeric(
         base_offset,
-        "decoded value \{raw} exceeds \{storage_digits} decimal digits declared by PIC (field holds at most \{dec_limit - 1})",
+        "decoded value \{shown} exceeds \{storage_digits} decimal digits declared by PIC (field holds at most \{dec_limit - 1})",
       ),
     )
   }
