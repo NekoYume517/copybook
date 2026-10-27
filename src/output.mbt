@@ -39,7 +39,13 @@ fn cell_to_json(v : CellValue) -> Json {
       } else if f == -1.0 / 0.0 {
         Json::string("-Infinity")
       } else {
-        Json::number(f, repr=f.to_string())
+        // **用 format_json_number，不用 f.to_string()**（CB-17）：
+        // `Double::to_string()` 对 -0.0 与 +0.0 都返回 "0"，符号位在文本
+        // 这一环丢失 —— 而 HFP 的 ±0 字节不同（`80 00 00 00` vs
+        // `00 00 00 00`），FIDELITY.md §2.3/§3 明确承诺两者各自往返。
+        // `format_json_number` 已经用 reinterpret 的符号位正确处理负零
+        // （jsonl.mbt），这里与它统一，避免同一语义两处实现漂移。
+        Json::number(f, repr=format_json_number(f))
       }
     Bytes(bs) => {
       let sb = StringBuilder()
