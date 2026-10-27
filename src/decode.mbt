@@ -188,6 +188,18 @@ pub(all) suberror DecodeError {
   InvalidEbcdic(Int32, Int32)
   /// 字段区间越界（防御性检查，正常 layout 不会触发）
   FieldOutOfBounds(String, Int32, Int32)
+  /// `roundtrip_check` 的**编码阶段**失败（CB-19）。
+  ///
+  /// 自检先解码、再编码，两个阶段都可能失败，但失败的含义完全不同：
+  /// decode 失败说明**数据坏**，encode 失败说明**数值解出来之后无法再用
+  /// 声明格式写回**（例如 HFP 的 56 位尾数超出 double、或解出的值超过
+  /// HFP 上界）。旧实现让两个阶段的错误都从同一个 `DecodeError` 通道返回，
+  /// CLI 因此把编码失败说成 "decode failed"，把归因指错了方向。
+  ///
+  /// 这个变体是**对 API 的追加**（与 `RecordRemainder` 同类），不属于签名
+  /// 变更：既有调用方按 `DecodeError` 匹配时，未覆盖该分支会显式报错而不是
+  /// 静默走错路径；`to_display` 已给出对应文案。
+  EncodeFailed(String)
 } derive(Debug)
 
 ///|
@@ -204,6 +216,7 @@ pub fn DecodeError::to_display(self : DecodeError) -> String {
       "invalid EBCDIC byte 0x\{hex2(byte)} at offset \{offset}"
     FieldOutOfBounds(field, offset, length) =>
       "field '\{field}' out of bounds: offset \{offset}, length \{length}"
+    EncodeFailed(detail) => "encode failed after a successful decode: \{detail}"
   }
 }
 
@@ -565,6 +578,42 @@ fn decode_text(
 }
 
 ///|
+/// 取 COMP-1 的 24 位尾数（不含符号与指数），供规格化检查用。
+fn hfp_raw_short_frac(bytes : BytesView) -> Int32 {
+  (bytes[1].to_int() << 16) | (bytes[2].to_int() << 8) | bytes[3].to_int()
+}
+
+///|
+/// 取 COMP-2 的 56 位尾数（不含符号与指数），供规格化检查用。
+fn hfp_raw_long(bytes : BytesView) -> UInt64 {
+  let mut raw : UInt64 = 0UL
+  for i = 0; i < 8; i = i + 1 {
+    raw = (raw << 8) | bytes[i].to_int().to_uint64()
+  }
+  raw & 0x00FFFFFFFFFFFFFFUL
+}
+
+///|
+/// 渲染 COMP-1 的 24 位尾数字节（bytes[1..4]）为十六进制，供错误消息用。
+fn hex_frac_short(bytes : BytesView) -> String {
+  let sb = StringBuilder()
+  for i = 1; i < 4; i = i + 1 {
+    sb.write_string(hex2(bytes[i].to_int()))
+  }
+  sb.to_string()
+}
+
+///|
+/// 渲染 COMP-2 的 56 位尾数字节（bytes[1..8]）为十六进制，供错误消息用。
+fn hex_frac_long(bytes : BytesView) -> String {
+  let sb = StringBuilder()
+  for i = 1; i < 8; i = i + 1 {
+    sb.write_string(hex2(bytes[i].to_int()))
+  }
+  sb.to_string()
+}
+
+///|
 /// 解码 COMP-1 / COMP-2。
 ///
 /// `mode` 决定字节解释方式，两者**完全互不兼容**：
@@ -590,9 +639,36 @@ fn decode_float_bytes(
   }
   match mode {
     Hfp =>
+      // **规格化检查**（CB-19）：HFP 的规格化尾数要求最高十六进制位非零，
+      // 即 COMP-1 的 F ∈ [2^20, 2^24)、COMP-2 的 F ∈ [2^52, 2^56)。
+      // F 低于该下界时值 < 2^-260，落在 encode 报 underflow 的那一档 ——
+      // decode 若照收，同一份字节就变成「decode 说没事、verify 说数据坏」，
+      // 两个方向结论矛盾。这里与 encode 对称地拒收，而不是解出一个
+      // encode 再也写不回去的数。
+      // 注意 `exp7 == 0` 不是条件：非规格化由**尾数**决定，`exp7 > 0` 而
+      // F 偏小时同样是未规格化形态（实测 `7F 00 00 01`）。
       if double_precision {
+        let raw = hfp_raw_long(bytes)
+        let frac = raw & 0x00FFFFFFFFFFFFFFUL
+        if frac != 0UL && frac < 0x0010000000000000UL {
+          return Err(
+            InvalidNumeric(
+              base_offset,
+              "HFP COMP-2 mantissa 0x\{hex_frac_long(bytes)} is not normalized (leading hexadecimal digit must be non-zero, i.e. F >= 2^52)",
+            ),
+          )
+        }
         Ok(Float(hfp_decode_long(bytes)))
       } else {
+        let frac = hfp_raw_short_frac(bytes)
+        if frac != 0 && frac < 0x100000 {
+          return Err(
+            InvalidNumeric(
+              base_offset,
+              "HFP COMP-1 mantissa 0x\{hex_frac_short(bytes)} is not normalized (leading hexadecimal digit must be non-zero, i.e. F >= 2^20)",
+            ),
+          )
+        }
         Ok(Float(hfp_decode_short(bytes)))
       }
     Ieee754 => {

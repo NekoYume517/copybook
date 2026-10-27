@@ -537,7 +537,17 @@ fn cmd_verify(opts : Options) -> Int32 {
     let rec = data[pos:pos + rec_len]
     match @lib.roundtrip_check(layout, rec) {
       Err(e) => {
-        eprintln("verify: record \{checked}: decode failed: " + e.to_display())
+        // CB-19：decode 与 encode 的失败含义不同，措辞必须区分 ——
+        // 编码失败说明「数据解得出来，但写不回去」，把它说成 decode failed
+        // 会把排查方向指错。EncodeFailed 自带的文案已含 "encode failed"。
+        match e {
+          @lib.EncodeFailed(_) =>
+            eprintln("verify: record \{checked}: " + e.to_display())
+          _ =>
+            eprintln(
+              "verify: record \{checked}: decode failed: " + e.to_display(),
+            )
+        }
         return EXIT_DATA
       }
       Ok(Some(off)) => {

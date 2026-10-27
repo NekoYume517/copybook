@@ -1134,7 +1134,11 @@ pub fn roundtrip_check(
   // 会被原样写回 —— 无需手工删除键。
   let reencoded = match encode_record(layout, values) {
     Ok(b) => b
-    Err(e) => return Err(e)
+    // **区分失败来源**（CB-19）：decode 已经成功，这里失败说明「数值解出来
+    // 之后无法再用声明的格式写回」（例如 HFP 的 56 位尾数超出 double 精度
+    // 区间、或解出的值超过 HFP 上界）。若与 decode 失败共用同一个通道，
+    // CLI 会把编码失败说成 "decode failed"，把归因指错方向。
+    Err(e) => return Err(EncodeFailed(e.to_display()))
   }
   let n = record.length()
   for i = 0; i < n && i < reencoded.length(); i = i + 1 {
