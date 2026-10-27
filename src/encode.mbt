@@ -806,7 +806,7 @@ fn field_is_primary(field : FieldLayout) -> Bool {
 ///
 /// 这是「中部空洞」与「尾部空洞」的分界线：`[0, primary_end)` 里未被主视图
 /// 覆盖的字节是中部空洞，`[primary_end, byte_length)` 是尾部空洞。两个集合
-/// 必须**互不重叠**——否则同一段字节会被两条旁路各回填一次。
+/// 必须**互不重叠**——否则同一段字节会被两条旁路各回填一次（CB-15）。
 fn primary_end_offset(layout : RecordLayout) -> Int32 {
   let mut end = 0
   for field in layout.fields {
@@ -821,10 +821,101 @@ fn primary_end_offset(layout : RecordLayout) -> Int32 {
 }
 
 ///|
-/// 计算布局的「尾部空洞」：所有主视图字段结束之后仍属于记录长度的区间——
-/// 只有重定义**视图**（自身声明了 REDEFINES 的项）才覆盖的字节。与
-/// `layout_tail_gap_bytes`（output 层）同一套区间逻辑。
-fn primary_tail_gaps(layout : RecordLayout) -> Array[(Int32, Int32)] {
+/// 该字段在这次编码中**是否真的会写入字节**（CB-16）。
+///
+/// 主视图字段总是写（缺值时写默认值 0 / 空格）；重定义视图只有在 `values`
+/// 里给了**非 Null** 的值时才写 —— `encode_field` 对
+/// `is_redefining && v is Null` 直接 `return Ok(())`，什么都不写。
+///
+/// 空洞判定必须用这个函数，而不能只看「有没有字段覆盖这段字节」：
+/// 「名义覆盖、实际不写」的视图若算作已覆盖，它独占的那段字节既不进空洞
+/// （不发旁路键）、也不会被任何字段写入，静默变成 Writer 初始的 `0x40`；
+/// 反之若把「确实会写」的视图算作空洞，回填的原始字节会覆盖它刚写好的值，
+/// `decode → 编辑视图 → encode` 的编辑被静默丢弃。
+///
+/// `values == None` 表示「还不知道视图会不会解出」：按最宽口径假设**不写**，
+/// 这样算出的空洞是超集，供 decode 决定是否附带原始字节（多附加无害）。
+fn field_will_write(
+  field : FieldLayout,
+  values : Map[String, CellValue]?,
+) -> Bool {
+  if !field.is_redefining {
+    return true
+  }
+  let v = match values {
+    None => return false
+    Some(m) =>
+      match m.get(field.path) {
+        Some(x) => x
+        None =>
+          match m.get(field.name) {
+            Some(x) => x
+            None => return false
+          }
+      }
+  }
+  match v {
+    Null => false
+    _ => true
+  }
+}
+
+///|
+/// 收集「会真正写入」的字段区间，按起点升序。
+fn written_intervals(
+  layout : RecordLayout,
+  values : Map[String, CellValue]?,
+) -> Array[(Int32, Int32)] {
+  let ivs : Array[(Int32, Int32)] = []
+  for f in layout.fields {
+    if field_will_write(f, values) {
+      ivs.push((f.offset, f.offset + f.total_length))
+    }
+  }
+  ivs.sort_by(fn(x, y) { x.0 - y.0 })
+  ivs
+}
+
+///|
+/// 在 `[from, to)` 中求未被 `ivs` 覆盖的区间（即空洞）。
+///
+/// `ivs` 必须按起点升序；区间可以互相重叠或包含，合并时取最大右端。
+fn complement_gaps(
+  ivs : Array[(Int32, Int32)],
+  from : Int32,
+  to : Int32,
+) -> Array[(Int32, Int32)] {
+  let gaps : Array[(Int32, Int32)] = []
+  let mut cur = from
+  for (s, e) in ivs {
+    let s0 = if s < from { from } else { s }
+    let e0 = if e > to { to } else { e }
+    // 与 [from,to) 无交集
+    if e0 <= from || s0 >= to {
+      continue
+    }
+    if s0 > cur {
+      gaps.push((cur, s0))
+    }
+    if e0 > cur {
+      cur = e0
+    }
+  }
+  if cur < to {
+    gaps.push((cur, to))
+  }
+  gaps
+}
+
+///|
+/// 计算布局的「尾部空洞」：`[主视图结束偏移, byte_length)` 中**没有字段
+/// 写入**的字节 —— 典型形态是重定义视图比主视图长、且该视图解不出。
+///
+/// 与 `layout_tail_gap_bytes`（output 层）同一套区间逻辑。
+fn primary_tail_gaps(
+  layout : RecordLayout,
+  values : Map[String, CellValue]?,
+) -> Array[(Int32, Int32)] {
   let mut primary_end = 0
   let mut has_primary = false
   for field in layout.fields {
@@ -839,48 +930,39 @@ fn primary_tail_gaps(layout : RecordLayout) -> Array[(Int32, Int32)] {
   if !has_primary || primary_end >= layout.byte_length {
     return []
   }
-  [(primary_end, layout.byte_length)]
+  complement_gaps(
+    written_intervals(layout, values),
+    primary_end,
+    layout.byte_length,
+  )
 }
 
 ///|
-/// 计算布局的「中部空洞」：叶子字段覆盖区间之间的缝隙——典型形态是
-/// `01 R. 05 A PIC X(2). 05 FILLER PIC X(2). 05 B PIC X(2).` 里 FILLER
-/// 占据的 2..4。FILLER 不进 layout.fields（布局层契约），这段字节在
-/// decode 结果里没有任何字段承载，encode 只能落 Writer 初始的 0x40，
+/// 计算布局的「中部空洞」：`[0, 主视图结束偏移)` 中**没有字段写入**的字节
+/// —— 典型形态是 `01 R. 05 A PIC X(2). 05 FILLER PIC X(2). 05 B PIC X(2).`
+/// 里 FILLER 占据的 2..4。FILLER 不进 layout.fields（布局层契约），这段
+/// 字节在 decode 结果里没有任何字段承载，encode 只能落 Writer 初始的 0x40，
 /// 原始字节被静默替换（P1-2）。
 ///
-/// 算法：把全部叶子字段的区间按偏移合并，`[0, primary_end)` 中未被覆盖的
-/// 区间即空洞。与 RecordLayout::covered_bytes 的区间合并同构。
-/// 手工构造布局的裂缝同样命中：数据面丢字节的位置就是这里报出的位置。
+/// 三条约束（每条都对应一次实测缺陷）：
 ///
-/// **上界必须收窄到 `primary_end`，不能是 `byte_length`**（CB-15）：
-/// 超出主视图的部分属于尾部空洞（`primary_tail_gaps`），两条旁路各自按
-/// 顺序游标取字节，重叠会让同一段字节被消费两次 —— 结果是先处理的那个
-/// 区间被静默写成别处的字节（实测 `C1 C2 C3 C4 12 3C FF EE` 经 JSONL
-/// 往返后中部 `C3 C4` 变 `40 40`，而 verify 报 OK）。
-fn filler_gaps(layout : RecordLayout) -> Array[(Int32, Int32)] {
-  let limit = primary_end_offset(layout)
-  let ivs : Array[(Int32, Int32)] = []
-  for f in layout.fields {
-    ivs.push((f.offset, f.offset + f.total_length))
-  }
-  ivs.sort_by(fn(x, y) { x.0 - y.0 })
-  let gaps : Array[(Int32, Int32)] = []
-  let mut cur = 0
-  for iv in ivs {
-    let (s, e) = iv
-    let s0 = if s > limit { limit } else { s }
-    if s0 > cur {
-      gaps.push((cur, s0))
-    }
-    if e > cur {
-      cur = if e > limit { limit } else { e }
-    }
-  }
-  if cur < limit {
-    gaps.push((cur, limit))
-  }
-  gaps
+/// 1. **值为 Null 的视图不算「覆盖」**（CB-16，见 `field_will_write`）。
+///    它什么都不写，若算作覆盖，视图独占的那段字节既不发旁路键、也不回填，
+///    静默变成 `0x40`，而 verify 报 byte mismatch —— 两条路径结论矛盾。
+/// 2. **值为非 Null 的视图必须算「覆盖」**，否则回填会把视图刚写好的值
+///    覆盖回原始字节，`decode → 编辑视图 → encode` 的编辑被静默丢弃。
+/// 3. **上界是主视图结束偏移，不是 `byte_length`**（CB-15）。超出主视图的
+///    部分属于尾部空洞，两条旁路各自按顺序游标取字节，重叠会让同一段字节
+///    被消费两次。
+fn filler_gaps(
+  layout : RecordLayout,
+  values : Map[String, CellValue]?,
+) -> Array[(Int32, Int32)] {
+  complement_gaps(
+    written_intervals(layout, values),
+    0,
+    primary_end_offset(layout),
+  )
 }
 
 ///|
@@ -981,17 +1063,18 @@ pub fn encode_record(
   match values.get("__record_bytes") {
     Some(Bytes(bs)) => {
       // 内存路径：整条记录，两个集合都按绝对偏移取。
-      restore(primary_tail_gaps(layout), bs, true)
-      restore(filler_gaps(layout), bs, true)
+      restore(primary_tail_gaps(layout, Some(values)), bs, true)
+      restore(filler_gaps(layout, Some(values)), bs, true)
     }
     _ => {
       // JSONL 路径：各键独立回填（缺哪个就跳过哪个）。
       match values.get("__tail_hex") {
-        Some(Bytes(bs)) => restore(primary_tail_gaps(layout), bs, false)
+        Some(Bytes(bs)) =>
+          restore(primary_tail_gaps(layout, Some(values)), bs, false)
         _ => ()
       }
       match values.get("__filler_hex") {
-        Some(Bytes(bs)) => restore(filler_gaps(layout), bs, false)
+        Some(Bytes(bs)) => restore(filler_gaps(layout, Some(values)), bs, false)
         _ => ()
       }
     }

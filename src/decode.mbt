@@ -780,8 +780,15 @@ fn decode_record_impl(
   //     → render_jsonl 据此带出 __filler_hex，encode_record 同样回填。
   // 没有空洞的布局不附加——decode 结果的键集合与旧版完全一致。
   // 严格解码不需要——任何视图失败直接报错，不存在丢信息的视图。
+  //
+  // 这里传 `None`：此刻还不知道哪些视图会解不出（空洞判定看的是编码侧
+  // 「哪些字段真的会写」），所以按**最宽**口径算——把全部视图都当作
+  // 「不写」。实际空洞是它的子集，因此该附加时一定附加（多附加无害：
+  // output 层用真实行值再算一次精确空洞，没有空洞就不写旁路键）。
   if !strict &&
-    primary_tail_gaps(layout).length() + filler_gaps(layout).length() > 0 {
+    primary_tail_gaps(layout, None).length() +
+    filler_gaps(layout, None).length() >
+    0 {
     out["__record_bytes"] = Bytes(record.to_bytes())
   }
   for field in layout.fields {

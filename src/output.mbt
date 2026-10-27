@@ -85,7 +85,10 @@ fn layout_tail_gap_bytes(
   layout : RecordLayout,
   row : Map[String, CellValue],
 ) -> String? {
-  let gaps = primary_tail_gaps(layout)
+  // 用真实行值判定空洞（CB-16）：值为非 Null 的视图会把自己那段字节写好，
+  // 那段就**不是**空洞，不能把原始字节当旁路信息带出去（否则编码时回填会
+  // 覆盖视图的值，编辑被静默丢弃）。
+  let gaps = primary_tail_gaps(layout, Some(row))
   if gaps.length() == 0 {
     return None
   }
@@ -130,7 +133,8 @@ fn layout_filler_gap_bytes(
   layout : RecordLayout,
   row : Map[String, CellValue],
 ) -> String? {
-  let gaps = filler_gaps(layout)
+  // 同上（CB-16）：按真实行值算空洞 —— 视图非 Null 时它那段不是空洞。
+  let gaps = filler_gaps(layout, Some(row))
   if gaps.length() == 0 {
     return None
   }
