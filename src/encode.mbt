@@ -802,6 +802,25 @@ fn field_is_primary(field : FieldLayout) -> Bool {
 }
 
 ///|
+/// 主视图字段覆盖区间的上界（最后一个主视图字段的结束偏移）。
+///
+/// 这是「中部空洞」与「尾部空洞」的分界线：`[0, primary_end)` 里未被主视图
+/// 覆盖的字节是中部空洞，`[primary_end, byte_length)` 是尾部空洞。两个集合
+/// 必须**互不重叠**——否则同一段字节会被两条旁路各回填一次。
+fn primary_end_offset(layout : RecordLayout) -> Int32 {
+  let mut end = 0
+  for field in layout.fields {
+    if field_is_primary(field) {
+      let e = field.offset + field.total_length
+      if e > end {
+        end = e
+      }
+    }
+  }
+  end
+}
+
+///|
 /// 计算布局的「尾部空洞」：所有主视图字段结束之后仍属于记录长度的区间——
 /// 只有重定义**视图**（自身声明了 REDEFINES 的项）才覆盖的字节。与
 /// `layout_tail_gap_bytes`（output 层）同一套区间逻辑。
@@ -830,11 +849,17 @@ fn primary_tail_gaps(layout : RecordLayout) -> Array[(Int32, Int32)] {
 /// decode 结果里没有任何字段承载，encode 只能落 Writer 初始的 0x40，
 /// 原始字节被静默替换（P1-2）。
 ///
-/// 算法：把**全部叶子字段**（含重定义视图——视图与主视图共享字节，
-/// 不产生额外缝隙）的区间按偏移合并，0..byte_length 中未被覆盖的
+/// 算法：把全部叶子字段的区间按偏移合并，`[0, primary_end)` 中未被覆盖的
 /// 区间即空洞。与 RecordLayout::covered_bytes 的区间合并同构。
 /// 手工构造布局的裂缝同样命中：数据面丢字节的位置就是这里报出的位置。
+///
+/// **上界必须收窄到 `primary_end`，不能是 `byte_length`**（CB-15）：
+/// 超出主视图的部分属于尾部空洞（`primary_tail_gaps`），两条旁路各自按
+/// 顺序游标取字节，重叠会让同一段字节被消费两次 —— 结果是先处理的那个
+/// 区间被静默写成别处的字节（实测 `C1 C2 C3 C4 12 3C FF EE` 经 JSONL
+/// 往返后中部 `C3 C4` 变 `40 40`，而 verify 报 OK）。
 fn filler_gaps(layout : RecordLayout) -> Array[(Int32, Int32)] {
+  let limit = primary_end_offset(layout)
   let ivs : Array[(Int32, Int32)] = []
   for f in layout.fields {
     ivs.push((f.offset, f.offset + f.total_length))
@@ -844,16 +869,16 @@ fn filler_gaps(layout : RecordLayout) -> Array[(Int32, Int32)] {
   let mut cur = 0
   for iv in ivs {
     let (s, e) = iv
-    let s0 = if s > layout.byte_length { layout.byte_length } else { s }
+    let s0 = if s > limit { limit } else { s }
     if s0 > cur {
       gaps.push((cur, s0))
     }
     if e > cur {
-      cur = e
+      cur = if e > limit { limit } else { e }
     }
   }
-  if cur < layout.byte_length {
-    gaps.push((cur, layout.byte_length))
+  if cur < limit {
+    gaps.push((cur, limit))
   }
   gaps
 }
@@ -928,49 +953,48 @@ pub fn encode_record(
   //   - 中部空洞（P1-2，FILLER 区 / 叶子字段之间的裂缝）：`__filler_hex`
   //     （JSONL 路径）或同一份 `__record_bytes`（内存路径）。FILLER 区的
   //     `C1 C2 C3 C4 C5 C6` 不再变 `C1 C2 40 40 C5 C6`。
-  let tail : Bytes? = match values.get("__tail_hex") {
-    Some(Bytes(bs)) => Some(bs)
-    _ =>
-      match values.get("__filler_hex") {
-        Some(Bytes(bs)) => Some(bs)
-        _ =>
-          match values.get("__record_bytes") {
-            Some(Bytes(bs)) => Some(bs)
-            _ => None
-          }
-      }
-  }
-  match tail {
-    Some(bs) => {
-      // JSONL 路径的旁路键只含空洞字节，从头按区间回填；
-      // 内存路径的 __record_bytes 是整条记录，字节在各自绝对位置。
-      let from_jsonl = values.get("__tail_hex") is Some(_) ||
-        values.get("__filler_hex") is Some(_)
-      let mut idx = 0
-      for (s, e) in primary_tail_gaps(layout) {
-        let mut i = s
-        while i < e {
-          let src = if from_jsonl { idx } else { i }
-          if src < bs.length() {
-            w.set(i, bs[src].to_int())
-          }
-          idx = idx + 1
-          i = i + 1
+  //
+  // **每个旁路键各用自己的游标、只回填自己那个集合**（CB-15）：
+  // __tail_hex 只含尾部区间的字节，__filler_hex 只含中部区间的字节，两者
+  // 内容不同。旧实现把两段字节塞进一个 `tail` 变量、两轮循环共用一个
+  // 递增的 `idx`，于是先处理的区间吃掉第二段的字节、第二段从越界处取到
+  // 空值 —— 合并了「中部 FILLER + REDEFINES 尾部」的布局因此静默损坏。
+  // 内存路径的 `__record_bytes` 是整条记录，按绝对偏移回填。
+  let restore = fn(
+    gaps : Array[(Int32, Int32)],
+    bs : Bytes,
+    absolute : Bool,
+  ) -> Unit {
+    let mut idx = 0
+    for (s, e) in gaps {
+      let mut i = s
+      while i < e {
+        let src = if absolute { i } else { idx }
+        if src < bs.length() {
+          w.set(i, bs[src].to_int())
         }
-      }
-      for (s, e) in filler_gaps(layout) {
-        let mut i = s
-        while i < e {
-          let src = if from_jsonl { idx } else { i }
-          if src < bs.length() {
-            w.set(i, bs[src].to_int())
-          }
-          idx = idx + 1
-          i = i + 1
-        }
+        idx = idx + 1
+        i = i + 1
       }
     }
-    None => ()
+  }
+  match values.get("__record_bytes") {
+    Some(Bytes(bs)) => {
+      // 内存路径：整条记录，两个集合都按绝对偏移取。
+      restore(primary_tail_gaps(layout), bs, true)
+      restore(filler_gaps(layout), bs, true)
+    }
+    _ => {
+      // JSONL 路径：各键独立回填（缺哪个就跳过哪个）。
+      match values.get("__tail_hex") {
+        Some(Bytes(bs)) => restore(primary_tail_gaps(layout), bs, false)
+        _ => ()
+      }
+      match values.get("__filler_hex") {
+        Some(Bytes(bs)) => restore(filler_gaps(layout), bs, false)
+        _ => ()
+      }
+    }
   }
   Ok(w.to_bytes())
 }
