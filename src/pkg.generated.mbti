@@ -91,6 +91,7 @@ pub(all) suberror DecodeError {
   InvalidNumeric(Int32, String)
   InvalidEbcdic(Int32, Int32)
   FieldOutOfBounds(String, Int32, Int32)
+  EncodeFailed(String)
 } derive(@debug.Debug)
 pub fn DecodeError::to_display(Self) -> String
 
