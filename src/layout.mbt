@@ -575,6 +575,41 @@ fn compile_field(
 }
 
 ///|
+/// 校验叶子路径唯一（CB-20）。
+///
+/// 解码结果是以 `FieldLayout.path` 为键的 map，`encode` / `render_jsonl` /
+/// `render_table` 也都按同一份 path 查找。**两个叶子拿到相同 path 时它们
+/// 在数据面上不可区分**：map 后写覆盖先写，于是 decode 静默丢字段、
+/// encode 把同一个值写进两个偏移。
+///
+/// 触发形态（两处都是 README/API 声明要支持的输入形态，因此必须在编译期
+/// 拦下而不是运行期去重）：
+///   - 多个 `01` 同名（README 把「多个 01 并列拼接」列为已声明的简化），
+///     各自的 `05 A` 都编译成 `R.A`；
+///   - 同名兄弟组（`05 G. 10 X.` 出现两次）→ `R.G.X` 重复。
+///
+/// 按项目第一原则「绝不静默修正」，这**不是**加后缀去重，而是显式报错：
+/// 一份自相矛盾的 copybook 应当是编译错误，而不是"看起来能用"的数据。
+///
+/// 不误杀的情形：不同组下的同名字段（`G1.A` / `G2.A`）、OCCURS 展开后的
+/// `A(1)` / `A(2)`、REDEFINES 视图与目标的各自路径 —— 它们的 path 互不相同。
+fn check_unique_leaf_paths(
+  leaves : Array[FieldLayout],
+) -> Unit raise ParseError {
+  let seen : Map[String, Int32] = Map([])
+  for f in leaves {
+    let key = f.path.to_lower()
+    match seen.get(key) {
+      None => seen[key] = f.offset
+      Some(first_offset) =>
+        raise InvalidLayout(
+          "duplicate field path '\{f.path}' (offsets \{first_offset} and \{f.offset}): a record layout must give every decodable leaf a unique path",
+        )
+    }
+  }
+}
+
+///|
 /// 把一整个 copybook（`Array[FieldSpec]`，每个 01 一项）编译成 `RecordLayout`。
 ///
 /// 取**第一个** 01 作为记录名与主体；若存在多个 01，其余 01 视为独立的记录，
@@ -620,6 +655,9 @@ pub fn compile_layout(
       x.level - y.level
     }
   })
+  // 叶子路径必须唯一（CB-20）：重复 path 会让 decode/encode 在数据面上
+  // 无法区分两个字段（map 键撞车），是静默丢数据的前置条件。
+  check_unique_leaf_paths(sorted_leaves)
   RecordLayout::{
     name: record_name,
     byte_length: b.cursor,

@@ -193,6 +193,14 @@ copybook decode --copybook app.cpy --data app.dat --float-mode ieee
 真的是多种记录型态混排，需要按记录类型拆分 copybook 分别处理。这个行为
 写进测试（多 01 偏移连续）而不是悄悄偏离。
 
+**重复的字段路径是编译错误。** 解码结果以字段路径为键（`R.G1.A`），所以
+两个可解码叶子拿到同一个路径时它们在数据面上不可区分：`decode` 会静默丢
+其中一个，`encode` 把同一个值写进两个偏移。`compile_layout` 因此在布局
+阶段显式报 `duplicate field path '<path>'`（对齐「绝不静默修正」，而不是
+运行期加后缀去重）。触发它的两类输入是**同名 `01`**（上一条的并列拼接
+形态）与**同名兄弟组**；`G1.A` / `G2.A` 这类不同组下的同名字段、以及
+`OCCURS` 展开出的 `A(1)` / `A(2)` 路径互不相同，不受影响。
+
 EBCDIC 使用 **cp037**（US/Canada）。ASCII 与 EBCDIC 的数字位置完全不同——`'0'` 在 ASCII 是 `0x30`，在 EBCDIC 是 `0xF0`。
 
 ## 设计要点

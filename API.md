@@ -117,6 +117,13 @@ pub fn parse_copybook(source : StringView) -> Array[FieldSpec] raise ParseError
 > **记录模型**：`compile_layout` 把整份 copybook 编译为**单条**记录布局。
 > 多个 `01` 层级按「并列拼接」处理（偏移连续），不是 COBOL 的多记录型态语义。
 > `FieldSpec.occurs_depending_on` 记录 ODO 依赖名，存储按上界固定展开。
+>
+> **重复字段路径是编译错误**：叶子路径（`R.G1.A`）是解码结果的 map 键，
+> 两个叶子拿到同一路径时它们在数据面上不可区分（`decode` 静默丢其中一个、
+> `encode` 把同一值写进两个偏移）。`compile_layout` 因此报
+> `duplicate field path '<path>'`（`InvalidLayout`），而不是运行期去重。
+> 不同组下的同名字段（`G1.A` / `G2.A`）与 `OCCURS` 展开出的
+> `A(1)` / `A(2)` 路径互不相同，不受影响。
 
 ## 3. 布局计算 `src/layout.mbt`
 
