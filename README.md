@@ -29,8 +29,22 @@
 
 ## 安装与运行
 
+**作为库依赖**（已发布到 [mooncakes.io](https://mooncakes.io/docs/NekoYume517/copybook)）：
+
 ```bash
-# 需要 MoonBit 工具链：https://www.moonbitlang.com/download
+moon add NekoYume517/copybook
+```
+
+```moonbit
+// 解析 copybook → 编译布局 → 解码 EBCDIC 记录
+let specs = @copybook.parse_copybook(cpy_text)
+let layout = @copybook.compile_layout(specs)
+let row = @copybook.decode_record(layout, record_bytes)
+```
+
+**作为命令行工具**（源码运行，需要 MoonBit 工具链：https://www.moonbitlang.com/download ）：
+
+```bash
 moon check
 moon test
 moon run cmd/copybook -- layout --copybook examples/customer.cpy

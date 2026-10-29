@@ -24,14 +24,14 @@ moon version
 
 ```bash
 moon check     # 类型检查，0 error
-moon test      # 320 个测试，全绿
+moon test      # 363 个测试，全绿
 moon build --target wasm
 ```
 
 预期输出（`moon test`）：
 
 ```
-Total tests: 320, passed: 320, failed: 0.
+Total tests: 363, passed: 363, failed: 0.
 ```
 
 ## 二、看字节布局（这是项目最有说服力的输出）
@@ -181,6 +181,12 @@ moon test
 | `src/encode_test.mbt` | 500 条随机记录字节级往返 |
 | `src/json_roundtrip_test.mbt` | 经过 JSON 文本的往返（含 5.00 回归） |
 | `src/output_test.mbt` | JSONL / 表格 / 布局报告的格式 |
+| `src/gap_combo_test.mbt` | 中部 FILLER 空洞 + REDEFINES 尾部空洞**同时存在**时的往返（CB-15） |
+| `src/view_gap_test.mbt` | 视图独占的中部区间保真，且「编辑视图后编辑必须生效」（CB-16） |
+| `src/float_neg_zero_test.mbt` | HFP / IEEE 浮点负零（`80 00 00 00`）跨 JSONL 保住符号位（CB-17） |
+| `src/comp_neg_capacity_test.mbt` | `S9(18) COMP` 负侧十进制容量强制（`-2^63` 拒收，CB-18） |
+| `src/hfp_denormal_test.mbt` | HFP 非规格化尾数拒收 + `verify` 区分 decode/encode 失败来源（CB-19） |
+| `src/duplicate_path_test.mbt` | 重复字段路径是编译错误；`G1.A`/`G2.A` 与 OCCURS 展开键不误杀（CB-20） |
 
 ## 十、看到这里还没被说服？
 
