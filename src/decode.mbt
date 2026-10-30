@@ -166,6 +166,18 @@ pub(all) enum CellValue {
   Bytes(Bytes)
   /// IEEE 754 浮点（COMP-1 / COMP-2 专用；定点路径不产出它）
   Float(Double)
+  /// 浮点 + **原始记录字节**（COMP-1 / COMP-2 专用）。
+  ///
+  /// 存在的理由（CB-21）：IBM HFP 的 `COMP-2` 尾数是 **56 位**，比 `Double`
+  /// 的 53 位多 3 位。低 3 位非零的值读进 `Double` 必然按最近偶数舍入，
+  /// 于是「decode → encode」不再是字节恒等——`41 80 00 00 00 00 00 01`
+  /// 会退化成 `41 80 00 00 00 00 00 00`。这与 L1「字节级往返」承诺直接冲突，
+  /// 而 `verify` 只能如实报 mismatch，用户没有任何办法保住原字节。
+  ///
+  /// 解法与 `Decimal.sign_nibble` / `__nibbles` 完全同构：decode 在这类
+  /// 字段上**额外挂一份原始字节**，encode 优先原样写回；JSONL 通过保留键
+  /// `__float_hex` 携带。`f` 仍是可读的近似值，不改变任何既有 API 语义。
+  FloatRaw(Double, Bytes)
 }
 
 ///|
@@ -658,7 +670,16 @@ fn decode_float_bytes(
             ),
           )
         }
-        Ok(Float(hfp_decode_long(bytes)))
+        // **保真判定**（CB-21）：`Double` 只有 53 位尾数，HFP COMP-2 有 56 位。
+        // 尾数低 3 位全零时 `Double` 能精确承载，往返自然字节恒等，不必挂
+        // 旁路（多数真实数据属于这一类，JSONL 输出保持不变）。有非零位时
+        // 挂原始字节，encode 原样写回，L1 承诺才真正覆盖 COMP-2。
+        let val = hfp_decode_long(bytes)
+        if (frac & 0x07UL) == 0UL {
+          Ok(Float(val))
+        } else {
+          Ok(FloatRaw(val, bytes.to_bytes()))
+        }
       } else {
         let frac = hfp_raw_short_frac(bytes)
         if frac != 0 && frac < 0x100000 {
@@ -669,6 +690,7 @@ fn decode_float_bytes(
             ),
           )
         }
+        // COMP-1 的 24 位尾数 < 53 位，`Double` 双向精确，永不挂旁路。
         Ok(Float(hfp_decode_short(bytes)))
       }
     Ieee754 => {
@@ -1019,6 +1041,7 @@ pub fn CellValue::to_display(self : CellValue) -> String {
     Int(i) => i.to_string()
     Decimal(d) => d.to_string()
     Float(f) => f.to_string()
+    FloatRaw(f, _) => f.to_string()
     Bool(b) => if b { "true" } else { "false" }
     Bytes(bs) => {
       let sb = StringBuilder()

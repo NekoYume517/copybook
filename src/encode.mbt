@@ -563,6 +563,7 @@ fn as_text(v : CellValue) -> String {
     Int(i) => i.to_string()
     Decimal(d) => d.to_string()
     Float(f) => f.to_string()
+    FloatRaw(f, _) => f.to_string()
     Bool(b) => if b { "true" } else { "false" }
     Null => ""
     Bytes(_) => ""
@@ -722,8 +723,23 @@ fn encode_float_bytes(
       InvalidNumeric(offset, "float field must be \{want} bytes, got \{width}"),
     )
   }
+  // **原字节优先**（CB-21）：decode 在 HFP `COMP-2` 尾数超出 `Double`
+  // 精度时挂了原始字节。这里直接写回，往返才是字节恒等的——否则
+  // `41 80 00 00 00 00 00 01` 会被舍入后重写成 `...00`。
+  // 只在 HFP 下认这个旁路：`FloatRaw` 只能由 HFP 解码产生，换成 IEEE
+  // 解释时原始字节不再是同一语义，必须按数值重新编码。
+  match v {
+    FloatRaw(_, raw) if mode == Hfp && raw.length() == want => {
+      for i = 0; i < want; i = i + 1 {
+        w.set(offset + i, raw[i].to_int())
+      }
+      return Ok(())
+    }
+    _ => ()
+  }
   let d : Double = match v {
     Float(f) => f
+    FloatRaw(f, _) => f
     Int(i) => i.to_double()
     Decimal(dd) => {
       // The coefficient is a magnitude; negative is the authoritative sign.

@@ -79,6 +79,45 @@ pub fn parse_jsonl_row(
           Some(_) => ()
         }
       }
+      // **超精度浮点旁路**（CB-21）：render_jsonl 在 HFP `COMP-2` 尾数低 3 位
+      // 非零时写出 `{"字段路径": "<hex>"}`。这里还原成 `FloatRaw(数值, 原字节)`，
+      // 让 encode 原样写回——否则「导出 JSON、编辑、导回」这条工作流会把
+      // `41 80 00 00 00 00 00 01` 悄悄改成 `...00`。
+      //
+      // 数值取自同一行已解析的文本（字段值本身仍是近似 double），
+      // 这样 `FloatRaw` 的 `f` 与 JSON 里看到的数字始终一致。
+      let float_raw : Map[String, Bytes] = Map([])
+      match obj.get("__float_hex") {
+        Some(Json::Object(fobj)) =>
+          for k, jv in fobj {
+            match jv {
+              Json::String(h) =>
+                match hex_to_bytes(h) {
+                  Some(bs) => float_raw[k] = bs
+                  None => ()
+                }
+              _ => ()
+            }
+          }
+        _ => ()
+      }
+      for field in layout.fields {
+        match float_raw.get(field.path) {
+          Some(bs) => {
+            let text = match out.get(field.path) {
+              Some(Text(s)) => s
+              _ => ""
+            }
+            let f = try @string.parse_double(text) catch {
+              _ => 0.0
+            } noraise {
+              x => x
+            }
+            out[field.path] = FloatRaw(f, bs)
+          }
+          None => ()
+        }
+      }
       // 把旁路 nibble 附回到对应字段：能解析成十进制的，直接产出带 nibble
       // 的 Decimal（scale 已按字段对齐），这样编码器拿到的就是带原始
       // 半字节的值，「decode → JSONL → encode」也能逐字节还原。

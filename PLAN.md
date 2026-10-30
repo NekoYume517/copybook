@@ -2,7 +2,7 @@
 
 > 仓库：<https://github.com/NekoYume517/copybook>
 > 赛事：MoonBit Hackathon 2026
-> 状态：已交付（`moon check` 0 错误 · 363 测试全绿 · CI 全绿 · wasm 构建通过）
+> 状态：已交付（`moon check` 0 错误 · 367 测试全绿 · CI 全绿 · wasm 构建通过）
 
 ---
 
@@ -57,7 +57,7 @@ lexer → parser → layout → decode/encode → output
 
 ## 5. 质量保障
 
-- **363 个测试**（本次审计前为 337），其中对抗性审查贡献 30 个回归测试（`review_test.mbt` 18 个 + `audit_test.mbt` 12 个），2026-10-27 轮次另补 26 个（`gap_combo` 3 + `view_gap` 4 + `float_neg_zero` 5 + `comp_neg_capacity` 4 + `hfp_denormal` 4 + `duplicate_path` 6），每条对应一个真实复现路径
+- **367 个测试**（本次审计前为 337），其中对抗性审查贡献 30 个回归测试（`review_test.mbt` 18 个 + `audit_test.mbt` 12 个），2026-10-27 轮次另补 26 个（`gap_combo` 3 + `view_gap` 4 + `float_neg_zero` 5 + `comp_neg_capacity` 4 + `hfp_denormal` 4 + `duplicate_path` 6），2026-10-30 复审轮次补 4 个（`comp2_precision`，COMP-2 超精度旁路 CB-21），每条对应一个真实复现路径
 - **独立实现交叉验证**：`scripts/gen_copybook_data.py` 用 Python 独立实现 cp037 / zoned / COMP-3，与 MoonBit 零共享代码——两边一致是证据，不是同义反复
 - **两轮审查**：第一轮子代理对抗审计修复 13 个缺陷；第二轮外部复验确认 18 条修复、抓到 1 个回归并已修复
 - **CI**：Linux runner 上 check / fmt / test --release / build wasm 四道门，依赖解析前显式 `moon update`

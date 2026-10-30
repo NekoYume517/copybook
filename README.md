@@ -151,7 +151,7 @@ copybook decode --copybook app.cpy --data app.dat --float-mode ieee
 
 选错的后果是**数值完全错误但不会报错**——`41 18 00 00` 按 IEEE 读出来是 9.5。这是把 HFP 的 `41 18 00 00` 当成 IEEE 754 解释后的结果；反过来把 IEEE 的 `3F C0 00 00` 当成 HFP 解释，也会得到无意义的值。所以 `layout` / `decode` / `encode` / `verify` 四个子命令都接受 `--float-mode`，且默认值写死为 `hfp`（有回归测试锁定，不允许悄悄改回 IEEE）。
 
-浮点字节保真的边界也在 [FIDELITY.md](FIDELITY.md) 里逐条列出（`COMP-2` 的 56 位尾数比 double 多 3 位，超出部分在解码时按最近偶数舍入丢失——这是 `Double` 类型本身的表达能力所限，不是实现缺陷）。
+浮点字节保真：`COMP-2` 的 56 位尾数比 `Double` 多 3 位，`Double` 存不下低 3 位非零的值。本项目**不因此放弃字节保真**——decode 对这类值产出带原始字节的 `FloatRaw`，encode 原样写回，JSONL 用保留键 `__float_hex` 携带；因此 `decode → JSONL → encode` 仍然逐字节恒等（详见 [FIDELITY.md](FIDELITY.md) 第 5.1 节）。`.f` 字段里的数值本身是近似值，精确值以 `__float_hex` 为准。
 
 ### 兼容范围速查
 

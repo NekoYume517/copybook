@@ -116,6 +116,7 @@ pub(all) enum CellValue {
   Bool(Bool)
   Bytes(Bytes)
   Float(Double)
+  FloatRaw(Double, Bytes)
 }
 pub fn CellValue::to_display(Self) -> String
 

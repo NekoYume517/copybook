@@ -47,6 +47,18 @@ fn cell_to_json(v : CellValue) -> Json {
         // （jsonl.mbt），这里与它统一，避免同一语义两处实现漂移。
         Json::number(f, repr=format_json_number(f))
       }
+    // COMP-2 超 `Double` 精度的值（CB-21）：数值列与 `Float` 完全一致，
+    // 原始字节由 `__float_hex` 旁路单独携带（见 render_jsonl 末尾）。
+    FloatRaw(f, _) =>
+      if f != f {
+        Json::string("NaN")
+      } else if f == 1.0 / 0.0 {
+        Json::string("Infinity")
+      } else if f == -1.0 / 0.0 {
+        Json::string("-Infinity")
+      } else {
+        Json::number(f, repr=format_json_number(f))
+      }
     Bytes(bs) => {
       let sb = StringBuilder()
       for i = 0; i < bs.length(); i = i + 1 {
@@ -59,6 +71,19 @@ fn cell_to_json(v : CellValue) -> Json {
       Json::string(sb.to_string())
     }
   }
+}
+
+///|
+/// 字节串 → 小写十六进制（`__float_hex` / `__filler_hex` / `__tail_hex`
+/// 三个旁路键共用同一表示，避免同一格式三处实现）。
+fn bytes_to_hex_lower(bs : Bytes) -> String {
+  let sb = StringBuilder()
+  for i = 0; i < bs.length(); i = i + 1 {
+    let v = bs[i].to_int()
+    sb.write_string(hex_lower((v >> 4) & 0xF))
+    sb.write_string(hex_lower(v & 0xF))
+  }
+  sb.to_string()
 }
 
 ///|
@@ -241,6 +266,34 @@ pub fn render_jsonl(
     }
     if nib.size() > 0 {
       obj["__nibbles"] = Json::object(nib)
+    }
+    // **超精度浮点旁路**（CB-21）：IBM HFP `COMP-2` 的尾数是 56 位，
+    // `Double` 只有 53 位。低 3 位非零的值读进 `Double` 会被舍入，重新
+    // 编码就写不回原字节（`41 80 00 00 00 00 00 01` → `...00`），
+    // 「L1 字节级往返」在这类字段上不成立。
+    //
+    // 与 `__nibbles` 同一手法：`{"字段路径": "<hex 原始字节>"}`。
+    // encode 前由 parse_jsonl_row 还原成 `FloatRaw`，encode 优先写回原字节。
+    // 只有真的超出 `Double` 精度的字段才写这个键——绝大多数记录的 JSONL
+    // 输出保持不变。
+    let floats : Map[String, Json] = Map([])
+    for field in layout.fields {
+      let v = match row.get(field.path) {
+        Some(x) => x
+        None =>
+          match row.get(field.name) {
+            Some(x) => x
+            None => Null
+          }
+      }
+      match v {
+        FloatRaw(_, raw) =>
+          floats[field.path] = Json::string(bytes_to_hex_lower(raw))
+        _ => ()
+      }
+    }
+    if floats.size() > 0 {
+      obj["__float_hex"] = Json::object(floats)
     }
     // **尾部字节旁路**（CB-9）：REDEFINES 视图可以比主视图长（布局层把记录
     // 延长到 max(主, 视图)），而宽容解码对解不出的重定义视图置 Null、encode

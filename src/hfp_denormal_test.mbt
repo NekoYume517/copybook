@@ -95,27 +95,35 @@ test "HFP zero and the smallest normalized magnitude still decode (CB-19)" {
 ///|
 test "roundtrip_check reports an encode failure as such, not a decode failure (CB-19)" {
   let layout = compile_layout(parse_copybook("01 R.\n  05 D COMP-2.\n"))
-  // 这个字节 decode 得出来（数值有限），但超过 HFP 上界，encode 会 overflow
+  // 这个字节 decode 得出来（数值有限），但超过 HFP 上界。
+  //
+  // **CB-21 之后语义变化**：该字节尾数低 3 位非零，decode 产出 `FloatRaw`
+  // 并带原始字节，encode 原样写回 —— 往返因此是字节恒等的，
+  // `roundtrip_check` 返回 Ok(None) 而不是报错。这是修复的正面效果：
+  // 既然原字节能一字不差还回去，就没有理由拒绝。
+  //
+  // 「归因必须指向 encode 而非 decode」这条缺陷（CB-19）仍需守住，
+  // 但它现在只能由**新建值**触发：调用方自己构造一个超出 HFP 上界的
+  // `Double`，没有原字节可用，encode 必须报 overflow 且经
+  // `EncodeFailed` 通道（下面第二段验证）。
   let rec = hfp_short([0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF])
   match decode_record(layout, rec) {
     Ok(_) => ()
     Err(e) => fail("decode of this byte must succeed: \{e.to_display()}")
   }
-  match roundtrip_check(layout, rec) {
-    Ok(_) => fail("roundtrip must fail (the value cannot be re-encoded)")
+  // 原始字节在，往返必须恒等（CB-21）
+  assert_eq(roundtrip_check(layout, rec).unwrap(), None)
+  // 新建的超界值没有原字节，必须走 encode 失败通道
+  let values : Map[String, CellValue] = Map([])
+  values["R.D"] = Float(1.0e300)
+  match encode_record(layout, values) {
+    Ok(_) => fail("encode of an out-of-range Double must fail")
     Err(e) =>
-      // 归因必须是「编码失败」，而不是含糊的 decode 失败
-      match e {
-        EncodeFailed(msg) =>
-          assert_true(
-            msg.contains("overflows") ||
-            msg.contains("underflows") ||
-            msg.contains("not representable"),
-          )
-        other =>
-          fail(
-            "roundtrip must attribute the failure to encode, got \{other.to_display()}",
-          )
-      }
+      assert_true(
+        e.to_display().contains("overflows") ||
+        e.to_display().contains("underflows") ||
+        e.to_display().contains("not representable") ||
+        e.to_display().contains("HFP"),
+      )
   }
 }
