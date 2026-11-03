@@ -186,6 +186,7 @@ pub(all) enum CellValue {
 ///
 /// 只 `derive(Debug)`：`derive(Eq)` 会刷 deprecation 警告，而测试里
 /// 需要比较时用 `match` 更清晰（见 CONTRACT-FIX.md 修正 2）。
+#derive(Debug)
 pub(all) suberror DecodeError {
   /// 记录字节数不足，无法按 layout 解码
   RecordTooShort(Int32, Int32)
@@ -212,7 +213,7 @@ pub(all) suberror DecodeError {
   /// 变更：既有调用方按 `DecodeError` 匹配时，未覆盖该分支会显式报错而不是
   /// 静默走错路径；`to_display` 已给出对应文案。
   EncodeFailed(String)
-} derive(Debug)
+}
 
 ///|
 /// 渲染错误为一行人类可读文本（CLI 与测试用）。

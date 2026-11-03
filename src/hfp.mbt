@@ -43,10 +43,11 @@
 ///
 /// - `Hfp`：IBM 主机十六进制浮点（默认，本项目目标平台）
 /// - `Ieee754`：IEEE 754 binary32 / binary64（GnuCOBOL、Micro Focus、x86）
+#derive(Eq, Debug)
 pub(all) enum FloatMode {
   Hfp
   Ieee754
-} derive(Eq, Debug)
+}
 
 ///|
 /// HFP 指数偏置（excess-64）。

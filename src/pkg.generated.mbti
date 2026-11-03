@@ -85,6 +85,7 @@ pub fn unicode_char_to_ebcdic(Char) -> Int32?
 pub fn unicode_to_ebcdic(Int32) -> Int32?
 
 // Errors
+#derive(@debug.Debug)
 pub(all) suberror DecodeError {
   RecordTooShort(Int32, Int32)
   RecordRemainder(Int32, Int32, Int32)
@@ -92,7 +93,7 @@ pub(all) suberror DecodeError {
   InvalidEbcdic(Int32, Int32)
   FieldOutOfBounds(String, Int32, Int32)
   EncodeFailed(String)
-} derive(@debug.Debug)
+}
 pub fn DecodeError::to_display(Self) -> String
 
 pub(all) suberror ParseError {
@@ -164,10 +165,11 @@ pub(all) struct FieldSpec {
   group_usage : Usage?
 }
 
+#derive(Eq, @debug.Debug)
 pub(all) enum FloatMode {
   Hfp
   Ieee754
-} derive(Eq, @debug.Debug)
+}
 
 pub(all) enum PicCategory {
   Numeric
