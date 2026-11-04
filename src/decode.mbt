@@ -700,11 +700,39 @@ fn decode_float_bytes(
         raw = (raw << 8) | bytes[i].to_int().to_uint64()
       }
       if double_precision {
-        Ok(Float(raw.to_int64().reinterpret_as_double()))
+        let v = raw.to_int64().reinterpret_as_double()
+        // **非有限值的位级保真**（NEW-2，2026-11-04 审计）：
+        // NaN/±Inf 的符号位与 payload 是位级身份的一部分，`Double` 能承载
+        // （binary64 的 NaN payload 有 52 位），但 JSON 数字没有地方放它们：
+        // `output.mbt` 只能渲染成字符串 "NaN"/"Infinity"，
+        // `jsonl.mbt` 再把 "NaN" 解回**规范** quiet NaN `0x7FF8…`。
+        // 于是 `7F F8 00 00 00 00 00 01`（带 payload 的 quiet NaN）经
+        // `decode → JSONL → encode` 变成 `FF F8 00 00 00 00 00 00`
+        // （符号位翻转、payload 清零），exit 0 —— 而**同一份数据**上
+        // `verify` 走的还是内存路径（reinterpret 保真），报 byte-identical。
+        // 两条路径对同一输入给出相反结论，正是 FIDELITY §1「L1 对所有支持
+        // 的字段类型成立」被证伪之处，也是「verify 掩盖文本往返缺陷」这个
+        // 形态的第三次复发（前两次：CB-2 负零、AUD-3 浮点负零）。
+        //
+        // 修法与 CB-21（HFP 超精度尾数）完全同构：非有限值挂原始字节旁路
+        // `FloatRaw`，`output.mbt` 据此写 `__float_hex`，encode 优先写回。
+        // 只在非有限值上挂——普通有限值的 JSONL 输出保持不变。
+        if v.is_nan() || v == 1.0 / 0.0 || v == -1.0 / 0.0 {
+          Ok(FloatRaw(v, bytes.to_bytes()))
+        } else {
+          Ok(Float(v))
+        }
       } else {
         // 单精度：低 32 位就是 binary32 位模式（raw 只有 4 字节，右移 32 恒为 0）
         let bits : Int32 = raw.to_int()
-        Ok(Float(Float::reinterpret_from_int(bits).to_double()))
+        let f = Float::reinterpret_from_int(bits).to_double()
+        // 同上的保真判定：binary32 的 NaN payload 有 23 位，`Double` 装得下
+        // 但文本表示装不下。非有限值一律挂旁路。
+        if f.is_nan() || f == 1.0 / 0.0 || f == -1.0 / 0.0 {
+          Ok(FloatRaw(f, bytes.to_bytes()))
+        } else {
+          Ok(Float(f))
+        }
       }
     }
   }

@@ -723,13 +723,19 @@ fn encode_float_bytes(
       InvalidNumeric(offset, "float field must be \{want} bytes, got \{width}"),
     )
   }
-  // **原字节优先**（CB-21）：decode 在 HFP `COMP-2` 尾数超出 `Double`
-  // 精度时挂了原始字节。这里直接写回，往返才是字节恒等的——否则
-  // `41 80 00 00 00 00 00 01` 会被舍入后重写成 `...00`。
-  // 只在 HFP 下认这个旁路：`FloatRaw` 只能由 HFP 解码产生，换成 IEEE
-  // 解释时原始字节不再是同一语义，必须按数值重新编码。
+  // **原字节优先**（CB-21 / NEW-2）：decode 在两种情形下挂了原始字节：
+  //   - HFP `COMP-2` 尾数超出 `Double` 精度（低 3 位非零，CB-21）；
+  //   - **任意模式**下的 NaN / ±Inf（IEEE 的 payload 与符号位在文本表示里
+  //     无处安放，NEW-2）。
+  // 原始字节就是 L1 承诺的载体，只要长度对得上就原样写回。
+  //
+  // 旧实现在这里加了 `mode == Hfp` 的限制，理由是「`FloatRaw` 只能由 HFP
+  // 解码产生，换成 IEEE 解释时原始字节不再是同一语义」。那对 CB-21 成立，
+  // 对 NEW-2 就错了：IEEE 模式自己也产 `FloatRaw` 了，且挂的正是本格式的
+  // 位模式。因此判定条件改为「长度与本字段一致」——那是唯一必要的检查，
+  // 与来源模式无关（`layout.float_mode` 已保证 decode/encode 用同一解释）。
   match v {
-    FloatRaw(_, raw) if mode == Hfp && raw.length() == want => {
+    FloatRaw(_, raw) if raw.length() == want => {
       for i = 0; i < want; i = i + 1 {
         w.set(offset + i, raw[i].to_int())
       }
