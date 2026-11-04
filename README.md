@@ -217,6 +217,21 @@ copybook decode --copybook app.cpy --data app.dat --float-mode ieee
 
 EBCDIC 使用 **cp037**（US/Canada）。ASCII 与 EBCDIC 的数字位置完全不同——`'0'` 在 ASCII 是 `0x30`，在 EBCDIC 是 `0xF0`。
 
+**`SYNC` / `SYNCHRONIZED` 不实现 IBM 对齐。** IBM 上 SYNC 是**对齐要求**：
+带 SYNC 的 COMP 字段必须落在半字/全字边界，它前面的字段因此可能被填充，
+记录变长。例如 `05 A PIC X(1). 05 B PIC S9(4) COMP SYNC. 05 C PIC X(1).`
+在 z/OS 上是 A@0、**B@2**、C@4、记录 **5** 字节；本实现按无填充算，
+给 A@0、B@1、C@3、记录 **4** 字节。
+
+后果不是「差一个字节」，而是**拿这份布局去解主机数据时，每个 COMP 数值
+都会从错误偏移读出错误值，而 `verify` 抓不到**——布局自洽，decode→encode
+当然逐字节一致。因此 `layout` 命令会对每个 SYNC 字段逐行标注
+`[SYNC: alignment not implemented, offsets differ from IBM]` 并在末尾给出
+汇总警告；这个标志也作为 `FieldLayout.is_synced` 出现在 API 里。读到警告
+就说明这份 copybook 不能直接用来读主机数据，需要先在 copybook 层按 IBM
+规则手工插入填充字段（或等本实现支持对齐）。回归测试：
+`src/sync_clause_test.mbt`。
+
 ## 设计要点
 
 **绝不静默修正。** 遇到非法 EBCDIC 字节、越界字段、长度不匹配，返回带偏移量的显式错误，而不是猜一个值。

@@ -498,6 +498,7 @@ pub fn render_layout(layout : RecordLayout) -> String {
   sb.write_string("NAME")
   sb.write_char('\n')
   // 数据行
+  let mut synced_count = 0
   for field in layout.fields {
     sb.write_string(pad_left(field.offset.to_string(), 6))
     sb.write_string("  ")
@@ -508,7 +509,26 @@ pub fn render_layout(layout : RecordLayout) -> String {
     sb.write_string(pad_right(pic_type_name(field.pic), 16))
     sb.write_string("  ")
     sb.write_string(field.path)
+    // **SYNC 警告**（NEW-4，2026-11-04 审计）：
+    // `SYNC` / `SYNCHRONIZED` 在 IBM 上是**对齐要求**——带 SYNC 的 COMP 字段
+    // 必须落在半字/全字边界上，它前面的字段因此可能被填充（记录变长）。
+    // 本子集不实现对齐（见 `FieldLayout.is_synced`），所以这份 copybook 的
+    // 偏移与真实 IBM 布局不同：拿它去读主机数据，每个 COMP 数值都会是错位
+    // 解出的错误值，而 verify 抓不到（布局自洽，往返当然一致）。
+    // 这里逐行标注，让使用者当场看见，而不是静默给出看起来权威的错布局。
+    if field.is_synced {
+      synced_count = synced_count + 1
+      sb.write_string(
+        "   [SYNC: alignment not implemented, offsets differ from IBM]",
+      )
+    }
     sb.write_char('\n')
+  }
+  if synced_count > 0 {
+    sb.write_char('\n')
+    sb.write_string(
+      "WARNING: \{synced_count} field(s) declare SYNC/SYNCHRONIZED. This subset does not implement IBM half-word/full-word alignment: offsets above are computed without padding, so they differ from what a real z/OS compiler produces. Do not use this layout to read host data containing SYNC fields.\n",
+    )
   }
   // 去掉末尾多余的换行：报告的行数应当恰好等于 2 + 1 + fields.length()
   // （标题、空行、表头、每个字段一行），最后一个字段行以 \n 结束即可。

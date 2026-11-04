@@ -68,6 +68,7 @@ test "manual OCCURS: absent or null redefined elements preserve primary bytes" {
     path: "R.B",
     redefine_group: 1,
     is_redefining: true,
+    is_synced: false,
   }
   let layout = {
     ..primary,

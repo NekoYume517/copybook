@@ -149,6 +149,7 @@ pub(all) struct FieldLayout {
   level : Int32
   redefine_group : Int32
   is_redefining : Bool
+  is_synced : Bool
 }
 
 pub(all) struct FieldSpec {
@@ -163,6 +164,7 @@ pub(all) struct FieldSpec {
   children : Array[FieldSpec]
   line : Int32
   group_usage : Usage?
+  is_synced : Bool
 }
 
 #derive(Eq, @debug.Debug)

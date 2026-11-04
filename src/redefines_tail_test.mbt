@@ -91,6 +91,7 @@ test "redefines tail: gap after a single primary field is preserved (manual layo
     level: 5,
     redefine_group: 1,
     is_redefining: true,
+    is_synced: false,
   }
   let layout : RecordLayout = {
     ..compiled,

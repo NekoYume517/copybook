@@ -139,6 +139,9 @@ pub(all) struct FieldSpec {
   children : Array[FieldSpec]
   line : Int32
   group_usage : Usage? // 组项上写的 USAGE，供子项继承
+  /// 声明了 SYNC / SYNCHRONIZED（NEW-4）。本子集不做 IBM 对齐，这个标志
+  /// 只为让 layout 输出能明确警告「这份 copybook 需要对齐，本工具不解」。
+  is_synced : Bool
 }
 
 ///|
@@ -177,6 +180,9 @@ priv struct RawEntry {
   // DISPLAY」与「默认 Display」——COBOL 标准规定子项显式声明优先于
   // 组级 USAGE，必须靠这个标志判别（R6）。
   explicit_usage : Usage?
+  /// 声明了 `SYNC` / `SYNCHRONIZED`（NEW-4，2026-11-04 审计）。
+  /// 本子集**不实现** IBM 半字/全字对齐，只记录以便 `layout` 输出警告。
+  is_synced : Bool
 }
 
 ///|
@@ -395,6 +401,7 @@ fn parse_program(p : ParserState) -> Array[FieldSpec] raise ParseError {
       value_literal: entry.value_literal,
       group_usage: entry.group_usage,
       explicit_usage: entry.explicit_usage,
+      is_synced: entry.is_synced,
     })
   }
 
@@ -502,6 +509,7 @@ fn build_children(
       children: kids,
       line: e.line,
       group_usage: e.group_usage,
+      is_synced: e.is_synced,
     })
   }
   (out, i)
@@ -522,6 +530,7 @@ priv struct EntryClauses {
   value_literal : String?
   group_usage : Usage?
   explicit_usage : Usage?
+  is_synced : Bool
 }
 
 ///|
@@ -541,6 +550,8 @@ fn parse_entry_clauses(
   let mut sign_separate = false
   // SIGN SEPARATE 的位置；默认 TRAILING（COBOL 默认对带符号数值是 TRAILING）
   let mut sign_leading = false
+  // 是否声明了 SYNC / SYNCHRONIZED（NEW-4：本子集不解对齐，只记录以便警告）
+  let mut is_synced = false
 
   while !p.at_eof() && !p.at_dot() {
     let tok = p.peek()
@@ -678,6 +689,10 @@ fn parse_entry_clauses(
     }
     if p.at_keyword("SYNC") || p.at_keyword("SYNCHRONIZED") {
       let _ = p.advance()
+      // 记录标志：本子集**不实现** IBM 半字/全字对齐（见 FieldLayout.is_synced）。
+      // 静默丢弃是本轮审计的 P1：真实 IBM copybook 的 COMP 字段会全部错位，
+      // 而布局自洽、verify 也抓不到。这里至少让 layout 输出能警告使用者。
+      is_synced = true
       // 可选的 LEFT / RIGHT
       match p.ident_here() {
         Some(w) => if w == "RIGHT" || w == "LEFT" { let _ = p.advance() }
@@ -782,6 +797,7 @@ fn parse_entry_clauses(
     value_literal,
     group_usage,
     explicit_usage,
+    is_synced,
   }
 }
 

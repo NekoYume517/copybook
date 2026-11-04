@@ -49,6 +49,7 @@ fn leaf(level : Int32, name : String, pic : PicClause) -> FieldSpec {
     children: [],
     line: 1,
     group_usage: None,
+    is_synced: false,
   }
 }
 
@@ -70,6 +71,7 @@ fn group(
     children,
     line: 1,
     group_usage: None,
+    is_synced: false,
   }
 }
 
@@ -243,6 +245,7 @@ test "OCCURS 组：total_length = 单元素 * occurs" {
     ],
     line: 1,
     group_usage: None,
+    is_synced: false,
   }
   let specs = [
     group(1, "ORDER-LINES", [
@@ -281,6 +284,7 @@ test "OCCURS 在最外层叶子上" {
     children: [],
     line: 1,
     group_usage: None,
+    is_synced: false,
   }
   let layout = compile_layout([group(1, "R", [f])])
   inspect(layout.byte_length, content="12")
@@ -319,6 +323,7 @@ test "REDEFINES 共享偏移且不累加长度" {
     children: [leaf(10, "RAW-BYTE", pic_x(6))],
     line: 1,
     group_usage: None,
+    is_synced: false,
   }
   let specs = [
     group(1, "ACCOUNT-MASTER", [
@@ -357,6 +362,7 @@ test "REDEFINES 目标不存在报错" {
     children: [],
     line: 7,
     group_usage: None,
+    is_synced: false,
   }
   let specs = [group(1, "R", [bad])]
   let r = try {

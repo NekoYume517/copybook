@@ -69,6 +69,7 @@ fn e_one(
     children: [],
     line: 1,
     group_usage: None,
+    is_synced: false,
   }
   let root : FieldSpec = {
     level: 1,
@@ -82,6 +83,7 @@ fn e_one(
     children: [spec],
     line: 1,
     group_usage: None,
+    is_synced: false,
   }
   compile_layout([root])
 }

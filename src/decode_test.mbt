@@ -41,6 +41,7 @@ fn one_numeric(
     children: [],
     line: 1,
     group_usage: None,
+    is_synced: false,
   }
   let root : FieldSpec = {
     level: 1,
@@ -54,6 +55,7 @@ fn one_numeric(
     children: [spec],
     line: 1,
     group_usage: None,
+    is_synced: false,
   }
   compile_layout([root])
 }
@@ -83,6 +85,7 @@ fn one_text(n : Int32) -> RecordLayout raise ParseError {
     children: [],
     line: 1,
     group_usage: None,
+    is_synced: false,
   }
   let root : FieldSpec = {
     level: 1,
@@ -96,6 +99,7 @@ fn one_text(n : Int32) -> RecordLayout raise ParseError {
     children: [spec],
     line: 1,
     group_usage: None,
+    is_synced: false,
   }
   compile_layout([root])
 }

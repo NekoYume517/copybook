@@ -57,6 +57,20 @@ pub(all) struct FieldLayout {
   /// decode/encode 的「主视图优先、视图失败置 Null」判定用它，而不是
   /// `redefine_group == 0`——后者会把 REDEFINES 的目标也误判成视图。
   is_redefining : Bool
+  /// 该字段声明了 `SYNC` / `SYNCHRONIZED`（NEW-4，2026-11-04 审计）。
+  ///
+  /// **本子集不实现 IBM 半字/全字对齐**：`SYNC` 子句在解析层被接受并丢弃
+  /// （见 `parser.mbt` 的注释），布局按无填充计算，因此带 `SYNC` 的 copybook
+  /// 与真实 IBM 布局**不一致**——`05 A PIC X(1). 05 B PIC S9(4) COMP SYNC.
+  /// 05 C PIC X(1).` 在 IBM 上是 A@0、**B@2**、C@4、记录 5 字节（B 对齐到
+  /// 偶偏移），本实现给 A@0、B@1、C@3、记录 4 字节。
+  ///
+  /// 危害不是"布局算错了一点"，而是**从真实主机数据里读出的每个 COMP 数值
+  /// 都是错位的错误值**，且 verify 抓不到（布局自洽，decode→encode 当然
+  /// 往返一致）。所以这个标志存在的唯一目的是：让 `layout` 输出和文档能
+  /// 明确告诉使用者"这份 copybook 有 SYNC，本工具不解对齐，别拿它读主机
+  /// 数据"，而不是静默给出一份看起来权威的错布局。
+  is_synced : Bool
 }
 
 ///|
@@ -446,6 +460,7 @@ fn compile_field(
         level: spec.level,
         redefine_group: group_id,
         is_redefining,
+        is_synced: spec.is_synced,
       }
       if occurs > 1 {
         // 展开成 occurs 份独立叶子：offset 逐元素推进，键带 1 起始下标，
@@ -555,6 +570,7 @@ fn compile_field(
         level: spec.level,
         redefine_group: group_id,
         is_redefining,
+        is_synced: spec.is_synced,
       }
       b.all.push(fl)
       b.by_name[spec.name.to_lower()] = field_base
