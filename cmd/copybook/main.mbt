@@ -67,6 +67,12 @@ priv struct Options {
   /// GnuCOBOL / Micro Focus 写 IEEE 754，同一份 copybook 两种字节布局完全
   /// 互不兼容。默认 `hfp`（本项目目标平台）。见 `--float-mode`。
   mut float_mode : @lib.FloatMode
+  /// 显式出现过的选项键（NEW-8：用于「子命令级白名单」校验）。
+  ///
+  /// 旧实现只做全局键识别，于是 ncode 静默接受 --data / --format /
+  /// --record-length 这些对它毫无意义的选项（exit 0）。打错一个子命令名
+  /// 或从别的命令复制过来时，用户得不到任何反馈。
+  given : Array[String]
 }
 
 ///|
@@ -83,6 +89,7 @@ fn parse_options(args : ArrayView[String]) -> Result[Options, String] {
     format: "jsonl",
     record_length: None,
     float_mode: @lib.Hfp,
+    given: [],
   }
   let mut i = 0
   let n = args.length()
@@ -112,32 +119,43 @@ fn parse_options(args : ArrayView[String]) -> Result[Options, String] {
       }
     }
     match key {
-      "--copybook" =>
+      "--copybook" => {
+        opts.given.push("--copybook")
         match take_value() {
           Ok(v) => opts.copybook = Some(v)
           Err(e) => return Err(e)
         }
-      "--data" =>
+      }
+      "--data" => {
+        opts.given.push("--data")
         match take_value() {
           Ok(v) => opts.data = Some(v)
           Err(e) => return Err(e)
         }
-      "--json" =>
+      }
+      "--json" => {
+        opts.given.push("--json")
         match take_value() {
           Ok(v) => opts.json = Some(v)
           Err(e) => return Err(e)
         }
-      "--out" =>
+      }
+      "--out" => {
+        opts.given.push("--out")
         match take_value() {
           Ok(v) => opts.out = Some(v)
           Err(e) => return Err(e)
         }
-      "--format" =>
+      }
+      "--format" => {
+        opts.given.push("--format")
         match take_value() {
           Ok(v) => opts.format = v
           Err(e) => return Err(e)
         }
-      "--record-length" =>
+      }
+      "--record-length" => {
+        opts.given.push("--record-length")
         match take_value() {
           Ok(v) =>
             match parse_positive_int(v) {
@@ -149,7 +167,9 @@ fn parse_options(args : ArrayView[String]) -> Result[Options, String] {
             }
           Err(e) => return Err(e)
         }
-      "--float-mode" =>
+      }
+      "--float-mode" => {
+        opts.given.push("--float-mode")
         match take_value() {
           Ok(v) =>
             match v.to_lower() {
@@ -162,6 +182,7 @@ fn parse_options(args : ArrayView[String]) -> Result[Options, String] {
             }
           Err(e) => return Err(e)
         }
+      }
       _ => return Err("unknown option '\{key}'")
     }
     i = i + 1
@@ -451,6 +472,20 @@ fn cmd_encode(opts : Options) -> Int32 {
   let lines = text.split("\n").collect()
   for i = 0; i < lines.length(); i = i + 1 {
     let line = lines[i].to_owned()
+    // **剥 BOM**（NEW-8，2026-11-04 审计）：copybook 侧词法层会剥 U+FEFF
+    // （`lexer.mbt` 的 tokenize 明确处理），但 encode 侧没有——于是
+    // 「编辑器/PowerShell 重定向产出的带 BOM 的 JSONL」会整份被拒，
+    // 报错只说 `invalid JSON`，不提 BOM，用户无从下手。
+    // README 推荐的 `> out.jsonl` 在 Windows 上正好会产生这种文件。
+    //
+    // 必须显式剥首字符：`trim(chars=...)` 是按字符集裁剪，BOM 不在默认
+    // 空白集里（它也不是空白），所以 `trim` 不动它。
+    let line = if line.length() > 0 &&
+      (line.get_char(0) : Char?) == Some('\u{FEFF}') {
+      line[1:].to_owned()
+    } else {
+      line
+    }
     let trimmed = line.trim(chars=" \t\r").to_owned()
     if trimmed.length() == 0 {
       continue
@@ -458,7 +493,13 @@ fn cmd_encode(opts : Options) -> Int32 {
     match @lib.parse_jsonl_row(layout, trimmed) {
       Ok(m) => rows.push(m)
       Err(msg) => {
+        // 报错带行号与原因；若这一行开头带 BOM 而其余都正常，说明是编码问题
         eprintln("encode: line \{i + 1}: \{msg}")
+        if line.length() > 0 && (line.get_char(0) : Char?) == Some('\u{FEFF}') {
+          eprintln(
+            "encode: line \{i + 1} starts with a UTF-8 BOM (U+FEFF); save the file as plain UTF-8 without BOM",
+          )
+        }
         return EXIT_DATA
       }
     }
@@ -601,6 +642,26 @@ fn try_write(path : String, bytes : Bytes) -> Result[Unit, @fs.IOError] {
 }
 
 ///|
+/// 子命令接受的选项白名单（NEW-8）。
+///
+/// 单独成函数是为了能被白盒测试锁定：`main` 里调用 `@sys.exit`，退出码本身
+/// 测不了，但「哪个子命令接受哪些键」这张表可以。
+///
+/// `--float-mode` 是全局选项（浮点字节解释是数据源属性），四个子命令都接受。
+/// 未知子命令返回空表，调用方据此跳过校验（由后面的 unknown-subcommand
+/// 分支报错）。
+fn allowed_options(sub : String) -> Array[String] {
+  match sub {
+    "layout" => ["--copybook", "--float-mode"]
+    "decode" =>
+      ["--copybook", "--data", "--format", "--record-length", "--float-mode"]
+    "encode" => ["--copybook", "--json", "--out", "--float-mode"]
+    "verify" => ["--copybook", "--data", "--record-length", "--float-mode"]
+    _ => []
+  }
+}
+
+///|
 fn main {
   let args = @env.args()
   // args[0] 是可执行文件路径
@@ -628,7 +689,31 @@ fn main {
         format: "",
         record_length: None,
         float_mode: @lib.Hfp,
+        given: [],
       }
+    }
+  }
+  // **子命令级选项白名单**（NEW-8，2026-11-04 审计）。
+  //
+  // 旧实现只做全局键识别，于是 `encode --data x --format table
+  // --record-length 3` 这类「从别的命令复制过来 / 打错子命令」的命令行
+  // 会被静默接受并 exit 0 —— 用户以为选项生效了，实际一个都没用上。
+  // 这里按子命令校验：给不属于它的键就报用法错误，并列出它接受什么。
+  // `--float-mode` 是全局选项（影响浮点解释），四个子命令都接受。
+  let allowed : Array[String] = allowed_options(sub)
+  if allowed.length() > 0 {
+    let wrong : Array[String] = []
+    for key in opts.given {
+      if !allowed.contains(key) {
+        wrong.push(key)
+      }
+    }
+    if wrong.length() > 0 {
+      let wrong_text = wrong.join(", ")
+      let allowed_text = allowed.join(", ")
+      eprintln("error: option(s) \{wrong_text} not accepted by '\{sub}'")
+      eprintln("error: '\{sub}' accepts: \{allowed_text}")
+      @sys.exit(EXIT_USAGE)
     }
   }
   let code = match sub {
