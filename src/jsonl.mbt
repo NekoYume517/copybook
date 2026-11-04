@@ -76,7 +76,16 @@ pub fn parse_jsonl_row(
           Some(Json::Null) => out[field.path] = Null
           Some(Json::True) => out[field.path] = Bool(true)
           Some(Json::False) => out[field.path] = Bool(false)
-          Some(_) => ()
+          // **已知字段收到对象/数组：报错而不是静默跳过**（NEW-5，2026-11-04 审计）。
+          //
+          // 旧实现是 `Some(_) => ()`，于是 `{"R.NAME":{"evil":1}}` 让该字段
+          // 从 map 里消失，`encode` 按「未赋值存储」写一整片 0x40 空格，
+          // exit 0、零提示 —— 手写 JSON 的嵌套错误变成整字段空白，正是
+          // 「绝不静默修正」要拒绝的形态。
+          Some(other) =>
+            return Err(
+              "field '\{field.path}': expected a string/number/null, got \{json_kind_name(other)}",
+            )
         }
       }
       // **超精度浮点旁路**（CB-21）：render_jsonl 在 HFP `COMP-2` 尾数低 3 位
@@ -94,9 +103,12 @@ pub fn parse_jsonl_row(
               Json::String(h) =>
                 match hex_to_bytes(h) {
                   Some(bs) => float_raw[k] = bs
-                  None => ()
+                  None =>
+                    return Err(
+                      "__float_hex['\{k}'] is not valid hex (odd length or non-hex character): '\{h}'",
+                    )
                 }
-              _ => ()
+              _ => return Err("__float_hex['\{k}'] must be a hex string")
             }
           }
         _ => ()
@@ -159,20 +171,35 @@ pub fn parse_jsonl_row(
         Some(Json::String(h)) =>
           match hex_to_bytes(h) {
             Some(bs) => out["__tail_hex"] = Bytes(bs)
-            None => ()
+            None =>
+              return Err(
+                "__tail_hex is not valid hex (odd length or non-hex character): '\{h}'",
+              )
           }
-        _ => ()
+        Some(_) => return Err("__tail_hex must be a hex string")
+        None => ()
       }
       // 中部空洞旁路（P1-2）：render_jsonl 写出的 `__filler_hex` 在这里
       // 还原成 Bytes，由 encode_record 在写完全部字段后回填 FILLER 区。
       // 没有这个键时行为与旧版完全一致。
+      //
+      // **内容损坏必须报错，不能静默降级**（NEW-6，2026-11-04 审计）。
+      // 旧实现解析失败走 `None => ()`，于是把 `__filler_hex` 改成奇数长度的
+      // "e" 之后 encode 仍 exit 0，对应字节被写成 0x40 —— 文件截断/传输损坏
+      // 之后，「无损往返」变成静默改字节，用户毫无信号。
+      // 这些键都以 `__` 开头：它们只可能来自 decode 的输出或蓄意构造，
+      // 报错没有误伤面（不像未知字段那样要容忍手写 JSON 的额外键）。
       match obj.get("__filler_hex") {
         Some(Json::String(h)) =>
           match hex_to_bytes(h) {
             Some(bs) => out["__filler_hex"] = Bytes(bs)
-            None => ()
+            None =>
+              return Err(
+                "__filler_hex is not valid hex (odd length or non-hex character): '\{h}'",
+              )
           }
-        _ => ()
+        Some(_) => return Err("__filler_hex must be a hex string")
+        None => ()
       }
       Ok(out)
     }
@@ -210,6 +237,24 @@ fn hex_to_bytes(h : String) -> Bytes? {
     i = i + 2
   }
   Some(Bytes::from_array(out))
+}
+
+///|
+/// JSON 值的种类名，用于「已知字段收到错误类型的值」的报错。
+///
+/// 只在报错路径调用，所以实现可以是简单的 match —— 目的不是给调用方
+/// 一个可编程分类，而是让错误消息能说清「你给的是对象，这里要字符串」，
+/// 而不是只丢一句 invalid。
+fn json_kind_name(j : Json) -> String {
+  match j {
+    Object(_) => "an object"
+    Array(_) => "an array"
+    String(_) => "a string"
+    Number(_, ..) => "a number"
+    True => "true"
+    False => "false"
+    Null => "null"
+  }
 }
 
 ///|
