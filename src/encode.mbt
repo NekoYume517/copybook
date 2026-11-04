@@ -980,11 +980,25 @@ fn filler_gaps(
   layout : RecordLayout,
   values : Map[String, CellValue]?,
 ) -> Array[(Int32, Int32)] {
-  complement_gaps(
-    written_intervals(layout, values),
-    0,
-    primary_end_offset(layout),
-  )
+  // **无主视图字段时上界回退到 byte_length**（NEW-1，2026-11-04 审计）。
+  //
+  // 全 FILLER 布局（`01 R. 05 FILLER PIC X(2). 05 FILLER PIC X(2).`）的
+  // `layout.fields` 为空（FILLER 不进 leaves，布局层契约），于是
+  // `primary_end_offset` 返回 0，中部空洞集为空、`__filler_hex` 永远不被
+  // 消费：decode 输出 `{}`（字节无任何载体）、encode 写全 0x40，连手工
+  // 补上 `{"__filler_hex":"f1f2f3f4"}` 都不生效。verify 能报 mismatch，
+  // 但 JSONL 工作流**无解**——这与 FIDELITY §3「FILLER 区由 __filler_hex
+  // 承载」的承诺直接冲突（CB-11 只修了「有其它字段」的形态）。
+  //
+  // 回退到 `byte_length` 时，尾部空洞的上界 `byte_length - primary_end`
+  // 自然收缩为 0（见 `primary_tail_gaps`），两个集合仍然互不重叠，
+  // CB-15 的不重叠约束不受影响。
+  let end = if layout.fields.length() == 0 {
+    layout.byte_length
+  } else {
+    primary_end_offset(layout)
+  }
+  complement_gaps(written_intervals(layout, values), 0, end)
 }
 
 ///|
