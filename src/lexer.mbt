@@ -898,11 +898,44 @@ fn scan_pic(
       seg.push(cs[m])
       m = m + 1
     }
-    if is_pic_continuation(seg) {
-      for ch in seg {
+    // **续接段尾随的 `.` 是语句终止符，不是模式内容**（NEW-7，2026-11-04 审计）。
+    //
+    // 缺陷形态：`05 N PIC S9(3) V99.` —— V 段是 PIC 的最后一段、后面紧跟
+    // 语句终止符。旧判定 `is_pic_continuation` 要求段内每个字符都是
+    // 数字/`P`/括号，于是 `V99.` 因末尾那个 `.` 被判「不是续接段」，
+    // 整个段被当成普通标识符 → `parse error: 数据项 'N' 的子句里出现
+    // 意料之外的 标识符 'V99'`。而 `lexer.mbt` 的注释第 65-67 行明确
+    // 声称支持 `PIC S9(7) V99` 写法 —— 它自己举的例子作为语句末尾即失败。
+    // `PIC S9(3) V99 COMP-3.`（句点在更后面）反而是好的，所以这是
+    // 「只有 V/P 段恰好收尾」的退化形态。
+    //
+    // 修法：判定前剥掉尾随的单句点，并入模式串后把扫描位置退回一格，
+    // 让外层照常发 Dot token。只剥**一个**句点：`V99..` 这种双点仍是
+    // 语法错误（第二个点由外层处理）。
+    let mut seg_len = seg.length()
+    let mut trailing_dot = false
+    if seg_len > 0 && seg[seg_len - 1] == '.' {
+      seg_len = seg_len - 1
+      trailing_dot = true
+    }
+    let core : Array[Char] = []
+    for idx = 0; idx < seg_len; idx = idx + 1 {
+      core.push(seg[idx])
+    }
+    if is_pic_continuation(core) {
+      for ch in core {
         pat.push(ch)
       }
-      i = m
+      if trailing_dot {
+        // 句点留给外层：扫描位置停在它上面（-1 后再由 i = m 前进）
+        i = m - 1
+      } else {
+        i = m
+      }
+      // 尾随句点意味着语句结束，续接循环就此收尾
+      if trailing_dot {
+        more = false
+      }
     } else {
       more = false
     }
