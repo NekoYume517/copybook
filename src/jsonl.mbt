@@ -116,16 +116,107 @@ pub fn parse_jsonl_row(
       for field in layout.fields {
         match float_raw.get(field.path) {
           Some(bs) => {
+            // 字段文本：Text 单元格直接用；**Float 单元格**是 57-68 行把
+            // "NaN"/"±Infinity" 字符串解回的特殊值 —— 渲染回它的文本形式，
+            // 让下面的非有限值分支能识别（否则 NaN 会被 parse_double 的
+            // catch 兜底成 0.0，误判成「编辑成 0」而丢旁路）。
             let text = match out.get(field.path) {
               Some(Text(s)) => s
+              Some(Float(f)) =>
+                if f.is_nan() {
+                  "NaN"
+                } else if f == 1.0 / 0.0 {
+                  "Infinity"
+                } else if f == -1.0 / 0.0 {
+                  "-Infinity"
+                } else {
+                  format_json_number(f)
+                }
               _ => ""
             }
-            let f = try @string.parse_double(text) catch {
-              _ => 0.0
-            } noraise {
-              x => x
+            // 非有限值先于 parse_double：`parse_double("NaN")` 抛异常，catch
+            // 兜底给 0.0 会让 NaN 误判成「编辑成 0」而丢掉整条旁路。
+            let f : Double = if text == "NaN" {
+              0.0 / 0.0
+            } else if text == "Infinity" {
+              1.0 / 0.0
+            } else if text == "-Infinity" {
+              -1.0 / 0.0
+            } else {
+              try @string.parse_double(text) catch {
+                _ => 0.0
+              } noraise {
+                x => x
+              }
             }
-            out[field.path] = FloatRaw(f, bs)
+            // **值感知**（RJ-3b，2026-11-06 组委会验收意见）：
+            // `__float_hex` 只在它与字段值**一致**时才生效 —— 即原始字节
+            // reinterpret 回来的数与文本描述的是同一个值。不一致说明用户
+            // **编辑了值**而旁路是 decode 时的旧快照：`{"R.D":9,
+            // "__float_hex":{"R.D":"4180000000000001"}}`（原值 8.0+ulp 改成 9）
+            // 必须按 9 编码，而不是被旧字节静默覆盖成 8.0+ulp —— 那是
+            // 「编辑不生效」，与 CB-16 在视图通道上的教训同族。
+            //
+            // 一致性判定不能比 double 相等：8.0+ulp 的原始字节解出的 f 就是
+            // 文本 "8" 的 double（文本本来就是这个近似值），比 double 会把
+            // 真 CB-21 场景误判成"一致"从而失效。改比**字节**：把当前文本
+            // 的 double 按**本字段格式**编码出字节，与旁路字节比对 ——
+            // 相同即"文本描述的就是这些字节"，旁路是冗余确认；不同即
+            // "用户改了值"，旁路过时，按值编码。
+            let mut consistent = false
+            // **一致性判据**（RJ-3b）：旁路字节 reinterpret 回来的 double，
+            // 与字段文本解析出的 double，是否描述同一个数值。
+            //
+            // 为什么不比「文本重编码出的字节 vs 旁路字节」：CB-21 的旁路
+            // 存在的理由恰恰是**字节 ≠ 数值**（56 位尾数塞不进 53 位 double，
+            // 文本 "8" 是 `41 80 …01` 的近似）——按字节比会让真正的旁路场景
+            // 全部失效。比数值则两边都是 double：CB-21 场景文本 "8" 与字节
+            // 解出的 8.0 相等（旁路生效）；用户把值改成 9 后 8.0+ulp ≠ 9.0
+            // （旁路过时，编辑生效）。
+            //
+            // NaN 特判：文本 "NaN" 解析不出数值，但 decode 写 "NaN" 的前提
+            // 就是字节本身非有限 —— 文本与字节都不有限即视为一致（符号位与
+            // payload 仍由旁路字节保真）。
+            let is_comp2 = match field.pic.usage {
+              Comp2 => true
+              _ => false
+            }
+            let want = if is_comp2 { 8 } else { 4 }
+            let mut raw : UInt64 = 0UL
+            for i = 0; i < want && i < bs.length(); i = i + 1 {
+              raw = (raw << 8) | bs[i].to_int().to_uint64()
+            }
+            // **用与 decode 相同的解释函数**读旁路字节：HFP 字节必须按 HFP
+            // 解（`41 80 …01` 按 HFP 是 8.0+ulp → 舍入 8.0；按 IEEE double
+            // 解则是 ~1e-309 的垃圾，两个世界不能混）。IEEE 字节按位模式
+            // reinterpret（NaN 场景 payload 也原样保留）。
+            let byte_value : Double = if layout.float_mode == Hfp {
+              // HFP 字节走 decode 同款解释（`41 80 …01` 按 HFP ≈ 8.0；
+              // 按 IEEE double 解释则是 ~1e-309 的垃圾，两个世界不能混）
+              if is_comp2 {
+                hfp_decode_long(Bytes::from_array(bs.to_array()))
+              } else {
+                hfp_decode_short(Bytes::from_array(bs.to_array()))
+              }
+            } else if is_comp2 {
+              raw.to_int64().reinterpret_as_double()
+            } else {
+              Float::reinterpret_from_int(raw.to_int()).to_double()
+            }
+            let both_nan = f.is_nan() && byte_value.is_nan()
+            let equal_values = f == byte_value ||
+              (f.is_nan() && byte_value.is_nan())
+            // ±Inf 的文本与字节都是 Inf，走 equal_values 自然成立。
+            consistent = both_nan || equal_values
+            if consistent {
+              out[field.path] = FloatRaw(f, bs)
+            } else {
+              // 编辑后的值：丢弃过时旁路，按文本数值走普通 Float 编码。
+              // 无声丢弃这里是**正确**语义（用户的编辑优先），与 NEW-6 的
+              // 「hex 损坏必须报错」不同：损坏是字节级事实错误，过时是
+              // 编辑的正常结果。
+              out[field.path] = Float(f)
+            }
           }
           None => ()
         }
@@ -134,6 +225,18 @@ pub fn parse_jsonl_row(
       // 的 Decimal（scale 已按字段对齐），这样编码器拿到的就是带原始
       // 半字节的值，「decode → JSONL → encode」也能逐字节还原。
       // 解析不出来（例如浮点字段的 "Infinity"）就保持原 CellValue。
+      //
+      // **值感知**（RJ-3a，2026-11-06 组委会验收意见）：`__nibbles` 只在
+      // 它与字段文本**一致**时才生效。不一致说明用户编辑了值 ——
+      // `{"R.N":25,"__nibbles":{"R.N":{"sign":13}}}`（原值 -25 改成 +25）
+      // 必须编出 `F0 F2 C5`（正号），而不是被旧符号半字节压成 `F0 F2 D5`
+      // —— 那是「改正数仍写负数」，与 CB-16 在视图通道上的教训同族。
+      //
+      // 一致性判定：符号半字节若为 0xD（负），文本必须也描述负数
+      // （或负零 `"-0"`/`0`，后者是 CB-2 的零特例）；0xC/0xF（正）时文本
+      // 必须非负。**零的豁免**：文本是 `0`（或 `-0`）且系数为 0 时，符号
+      // 半字节就是唯一的符号载体（CB-2），保持旁路优先 —— 用户把 -0 编辑
+      // 成 +0 的形态是 `{"R.N":0}` 不带旁路键，不会走到这条豁免。
       for field in layout.fields {
         match nibbles.get(field.path) {
           Some((sn, pn)) =>
@@ -148,14 +251,33 @@ pub fn parse_jsonl_row(
                     // zoned `F0 F0 D0` / packed `00 0D` 会被重编码成正零
                     // `F0 F0 F0` / `00 0C`（CB-2）。非零值仍由文本与半字节
                     // 共同决定（文本写 `-123`，半字节写 D），两者一致。
-                    let negative = d.negative || sn == Some(0xD)
-                    out[field.path] = Decimal(Decimal::{
-                      coefficient: d.coefficient,
-                      scale: d.scale,
-                      negative,
-                      sign_nibble: sn,
-                      pad_nibble: pn,
-                    })
+                    let sn_negative = sn == Some(0xD)
+                    let zero = d.coefficient == 0L
+                    // 编辑检测：半字节说负、文本说正（非零系数），两者矛盾
+                    // → 文本是用户的编辑，旁路过时。
+                    let edited = sn_negative && !d.negative && !zero
+                    if edited {
+                      // 编辑后的正数：sign_nibble 给 0xC（zoned/packed 正号
+                      // 的最常见形态）。给 None 会让 encode 写 F 区号 ——
+                      // 也合法（CB-12），但 C 是「有符号字段的正号」，与
+                      // 字段声明 PIC S9 的语义更贴。
+                      out[field.path] = Decimal(Decimal::{
+                        coefficient: d.coefficient,
+                        scale: d.scale,
+                        negative: false,
+                        sign_nibble: Some(0xC),
+                        pad_nibble: pn,
+                      })
+                    } else {
+                      let negative = d.negative || sn_negative
+                      out[field.path] = Decimal(Decimal::{
+                        coefficient: d.coefficient,
+                        scale: d.scale,
+                        negative,
+                        sign_nibble: sn,
+                        pad_nibble: pn,
+                      })
+                    }
                   }
                   None => ()
                 }
