@@ -324,7 +324,16 @@ fn chars_sub(cs : Array[Char], start : Int32, stop : Int32) -> String {
 }
 
 ///|
-/// 整文件判定：前 6 列全是数字的行存在 → 定长格式
+/// 整文件判定：前 6 列全是数字的行存在 → 定长格式。
+///
+/// **追加判定**（RJ-2，2026-11-06 组委会验收意见）：存在「1-6 列全空白、
+/// 第 7 列是 `-`」的行 → 也按定长格式。无序号固定格式（IBM 手写、教学
+/// 样例的常见形态）与自由格式在 1-6 列上**不可区分**（都是空白/空），
+/// 旧判定对它返回 false，于是列 7 的续行符被自由格式分支当成
+/// 「行首 `-`」直接报错 —— 续行能力对最需要它的文件形态失效。
+/// 而「列 7 恰好是 `-`」在自由格式里没有合法含义（自由格式的连字符只
+/// 出现在标识符中间，不会顶在第七列的行首），它是定长格式的**强信号**，
+/// 拿它补判不会误伤自由格式。
 fn detect_fixed_format(lines : Array[String]) -> Bool {
   for line in lines {
     let cs = line.to_array()
@@ -340,6 +349,22 @@ fn detect_fixed_format(lines : Array[String]) -> Bool {
         }
       }
       if all_digits {
+        return true
+      }
+    }
+    // 无序号定长格式的续行信号：1-6 列全空白 + 第 7 列是 `-`
+    if cs.length() >= 7 && cs[6] == '-' {
+      let mut all_blank = true
+      let mut i = 0
+      while i < 6 {
+        if !is_blank(cs[i]) {
+          all_blank = false
+          i = 6
+        } else {
+          i = i + 1
+        }
+      }
+      if all_blank {
         return true
       }
     }
@@ -478,30 +503,23 @@ fn collect_code_lines(
           line_no, 7, "续行符 '-' 前面没有可续接的逻辑行",
         )
       }
-      // 词间断行必须补一个空格（P2-3）：`000200 05 A PIC` + `000300- X(10).`
-      // 直接相接会拼成 `PICX`（报错且无指向）。判定：拼接点两侧是
-      // 「字母×字母」或「字母×数字」的组合——标识符/关键字允许内嵌数字，
-      // `OCCURS` + `3` 粘成 `OCCURS3` 同样是词粘连；唯独「数字×数字」
-      // 豁免（`X(1` + `2` → `X(12)` 是 continuation_test 锁定的既有契约，
-      // 且数字串只可能是字面量/位数，不存在词边界）。字面量内拼接
-      // （'ABC + DEF'）由未闭合引号判定豁免，零相接不变。
-      fn wordish(c : Char) -> Bool {
-        is_ascii_letter(c) || is_digit_char(c)
-      }
-      let in_literal = has_unclosed_quote(acc)
-      let both_alpha = acc.length() > 0 &&
-        start < stop &&
-        is_ascii_letter(acc[acc.length() - 1]) &&
-        is_ascii_letter(cs[start])
-      let mixed = acc.length() > 0 &&
-        start < stop &&
-        wordish(acc[acc.length() - 1]) &&
-        wordish(cs[start]) &&
-        !(is_digit_char(acc[acc.length() - 1]) && is_digit_char(cs[start]))
-      let joins_words = !in_literal && (both_alpha || mixed)
-      if joins_words {
-        acc.push(' ')
-      }
+      // **拼接 = 直接相接，不补空格**（RJ-2b，2026-11-06 组委会验收意见；
+      // 撤销 P2-3 的「词间断行补空格」）。
+      //
+      // IBM 标准：列 7 的 `-` 表示「把本行区 B 的内容**无空格地**接到上一条
+      // 逻辑行尾」——这是分裂词续行（`CUST` + `OUNTER` → `CUSTOMER`）的
+      // **唯一**实现手段，`PIC 9(3)` 断成 `PIC 9(3` + `V99` 也靠它。P2-3
+      // 加的「字母×字母补空格」把这个语义破坏了：
+      //   `05 CUST` + `-    OUNTER PIC 9(3).` 被拆成 `CUST OUNTER` 两个词，
+      //   报「数据项 'CUST' 的子句里出现意料之外的 标识符 'OUNTER'」——
+      //   组委会验收正是栽在这里。
+      //
+      // P2-3 想防的「`PIC` + `X(10)` 粘成 `PICX`」在 IBM 语义下**本来就
+      // 应该粘**（那确实是用户的断行错误，粘出来的报错才指向真问题——
+      // 断行位置），补空格把错误输入洗成了另一个错误。
+      //
+      // 字面量内拼接（`'ABC` + `DEF'` → `'ABCDEF'`）与零相接行为与此一致，
+      // continuation_test 锁定的既有契约全部不变。
       for i = start; i < stop; i = i + 1 {
         acc.push(cs[i])
       }
