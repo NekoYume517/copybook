@@ -672,14 +672,21 @@ fn decode_float_bytes(
           )
         }
         // **保真判定**（CB-21）：`Double` 只有 53 位尾数，HFP COMP-2 有 56 位。
-        // 尾数低 3 位全零时 `Double` 能精确承载，往返自然字节恒等，不必挂
-        // 旁路（多数真实数据属于这一类，JSONL 输出保持不变）。有非零位时
-        // 挂原始字节，encode 原样写回，L1 承诺才真正覆盖 COMP-2。
+        // 尾数低 3 位全零时 `Double` 能精确承载；**零**（RJ-1）由尾数为 0
+        // 定义，特征值不属于数值 —— 两种「字节身份 ≠ Double 身份」的形态
+        // 都挂原始字节旁路，encode 原样写回，L1 承诺才真正覆盖 COMP-2。
         let val = hfp_decode_long(bytes)
-        if (frac & 0x07UL) == 0UL {
-          Ok(Float(val))
-        } else {
+        let low3_nonzero = frac != 0UL && (frac & 0x07UL) != 0UL
+        // 零 = frac == 0。**规范零**只有两种字节形态：`00 00 00 00`（+0）
+        // 与 `80 00 00 00`（-0，CB-17 承诺不挂旁路、数值列直接写 -0）；
+        // 其余（如 `41 00 00 00`，特征值 65 的 +0）都挂旁路保字节（RJ-1）。
+        let noncanonical_zero = frac == 0UL &&
+          bytes[0].to_int() != 0x00 &&
+          bytes[0].to_int() != 0x80
+        if low3_nonzero || noncanonical_zero {
           Ok(FloatRaw(val, bytes.to_bytes()))
+        } else {
+          Ok(Float(val))
         }
       } else {
         let frac = hfp_raw_short_frac(bytes)
@@ -691,8 +698,17 @@ fn decode_float_bytes(
             ),
           )
         }
-        // COMP-1 的 24 位尾数 < 53 位，`Double` 双向精确，永不挂旁路。
-        Ok(Float(hfp_decode_short(bytes)))
+        // COMP-1 的 24 位尾数 < 53 位，`Double` 双向精确；**零同上**（RJ-1）：
+        // `41 00 00 00`（特征值 65 的 +0）也挂旁路保住字节。
+        let val = hfp_decode_short(bytes)
+        let noncanonical_zero = frac == 0 &&
+          bytes[0].to_int() != 0x00 &&
+          bytes[0].to_int() != 0x80
+        if noncanonical_zero {
+          Ok(FloatRaw(val, bytes.to_bytes()))
+        } else {
+          Ok(Float(val))
+        }
       }
     Ieee754 => {
       let mut raw : UInt64 = 0UL
