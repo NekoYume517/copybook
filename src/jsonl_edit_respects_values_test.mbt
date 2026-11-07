@@ -66,11 +66,28 @@ test "RJ-3a: 负零豁免不被编辑检测误伤（CB-2 保持）" {
   let rowmap = parse_jsonl_row(layout, line).unwrap()
   let out = encode_record(layout, rowmap).unwrap()
   assert_eq(out[2].to_int(), 0xD0)
-  // 文本 "0"（JSON 词法把 -0 的负号吞掉后的形态）+ 0xD 同样豁免
-  let line2 = "{\"R.N\":0,\"__nibbles\":{\"R.N\":{\"sign\":13}}}"
-  let rowmap2 = parse_jsonl_row(layout, line2).unwrap()
-  let out2 = encode_record(layout, rowmap2).unwrap()
-  assert_eq(out2[2].to_int(), 0xD0)
+  // sign=12（正）+ 文本 0：非 0xD 不进豁免分支，正零 C0
+  let line3 = "{\"R.N\":0,\"__nibbles\":{\"R.N\":{\"sign\":12}}}"
+  let rowmap3 = parse_jsonl_row(layout, line3).unwrap()
+  let out3 = encode_record(layout, rowmap3).unwrap()
+  assert_eq(out3[2].to_int(), 0xC0)
+}
+
+///|
+test "RJ-3a: 带 0xD 旁路把 -0 编辑成 +0 时编辑生效（decode 原文是 \"-0\"）" {
+  let layout = sgn_layout()
+  // decode 对负零写出的文本是 "-0"（CLI 实测），不是 "0"。因此
+  // `{"R.N":0,"__nibbles":{"R.N":{"sign":13}}}` 里文本 "0" 不可能是
+  // decode 的原样输出 —— 它只能是编辑（或下游系统把 -0 规范化成 0 的
+  // 显式改写）。JSON 词法吞负号只发生在「**读取** -0」时；decode 写出
+  // 用的是带负号的文本。zero 豁免保护的是前者，不该吞掉后者。
+  let line = "{\"R.N\":0,\"__nibbles\":{\"R.N\":{\"sign\":13}}}"
+  let rowmap = parse_jsonl_row(layout, line).unwrap()
+  let out = encode_record(layout, rowmap).unwrap()
+  // 编辑生效：正零 F0 F0 C0（修复前被豁免翻回 D0）
+  assert_eq(out[2].to_int(), 0xC0)
+  // 未编辑的原样往返不受影响：文本 "-0" + sign 13 仍是 D0（上面的
+  // CB-2 保持测试已锁）
 }
 
 ///|

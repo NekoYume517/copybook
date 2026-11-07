@@ -232,11 +232,15 @@ pub fn parse_jsonl_row(
       // 必须编出 `F0 F2 C5`（正号），而不是被旧符号半字节压成 `F0 F2 D5`
       // —— 那是「改正数仍写负数」，与 CB-16 在视图通道上的教训同族。
       //
-      // 一致性判定：符号半字节若为 0xD（负），文本必须也描述负数
-      // （或负零 `"-0"`/`0`，后者是 CB-2 的零特例）；0xC/0xF（正）时文本
-      // 必须非负。**零的豁免**：文本是 `0`（或 `-0`）且系数为 0 时，符号
-      // 半字节就是唯一的符号载体（CB-2），保持旁路优先 —— 用户把 -0 编辑
-      // 成 +0 的形态是 `{"R.N":0}` 不带旁路键，不会走到这条豁免。
+      // 一致性判定：符号半字节若为 0xD（负），文本必须也描述负数；
+      // 0xC/0xF（正）时文本必须非负。**零的豁免（CB-2）只保护 `"-0"`**：
+      // decode 对负零写出的文本恒为 `"-0"`（CLI 实测），JSON 词法吞负号
+      // 只发生在「读取」侧；因此文本 `"-0"` + sign 13 是原样往返，保持
+      // 旁路优先。而文本 `"0"` + sign 13 **不可能是 decode 的输出** ——
+      // 它只能是编辑（用户把 -0 改成 +0 而行尾旁路键被文本编辑器原样
+      // 保留）或下游系统的显式规范化，编辑必须生效（RJ-3a 补遗，
+      // 2026-11-08 审计：旧豁免把 `"-0"` 与 `"0"` 一起豁免，编辑后的
+      // 正零被静默翻回负零 `00 0D`）。
       for field in layout.fields {
         match nibbles.get(field.path) {
           Some((sn, pn)) =>
@@ -245,22 +249,21 @@ pub fn parse_jsonl_row(
                 match parse_decimal_with_scale(s, field.pic) {
                   Some(d) => {
                     // **符号以符号半字节为准**：0xD 是字节层的负号事实。
-                    // 文本在系数为 0 时会丢掉负号 —— JSON 不允许定点类型，
-                    // `-0` 经核心 JSON 词法后原文不保留（repr 只为超出 double
-                    // 精确范围的数字保留），文本只剩 "0"。若这里只看文本，
-                    // zoned `F0 F0 D0` / packed `00 0D` 会被重编码成正零
-                    // `F0 F0 F0` / `00 0C`（CB-2）。非零值仍由文本与半字节
-                    // 共同决定（文本写 `-123`，半字节写 D），两者一致。
+                    // 文本 "-0" 在系数为 0 时是唯一能把符号带进 JSON 的
+                    // 形态（CB-2）；只有它享受豁免。非零值仍由文本与
+                    // 半字节共同决定（文本写 `-123`，半字节写 D）。
                     let sn_negative = sn == Some(0xD)
                     let zero = d.coefficient == 0L
-                    // 编辑检测：半字节说负、文本说正（非零系数），两者矛盾
-                    // → 文本是用户的编辑，旁路过时。
-                    let edited = sn_negative && !d.negative && !zero
+                    // 编辑检测：半字节说负、文本说正，两者矛盾 → 文本是
+                    // 用户的编辑，旁路过时。零值上：文本 "0"（非 "-0"）
+                    // + 0xD 同样矛盾 —— decode 原文不会是裸 "0"。
+                    let zero_exempt = zero && s == "-0"
+                    let edited = sn_negative && !d.negative && !zero_exempt
                     if edited {
-                      // 编辑后的正数：sign_nibble 给 0xC（zoned/packed 正号
-                      // 的最常见形态）。给 None 会让 encode 写 F 区号 ——
-                      // 也合法（CB-12），但 C 是「有符号字段的正号」，与
-                      // 字段声明 PIC S9 的语义更贴。
+                      // 编辑后的正数（含 -0 → +0）：sign_nibble 给 0xC
+                      // （zoned/packed 正号的最常见形态）。给 None 会让
+                      // encode 写 F 区号 —— 也合法（CB-12），但 C 是
+                      // 「有符号字段的正号」，与字段声明 PIC S9 的语义更贴。
                       out[field.path] = Decimal(Decimal::{
                         coefficient: d.coefficient,
                         scale: d.scale,
