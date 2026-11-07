@@ -155,7 +155,13 @@ pub fn parse_jsonl_row(
         _ => ()
       }
       for field in layout.fields {
-        match float_raw.get(field.path) {
+        // 旁路键查找与字段值查询同款宽容度（CB-5）：先完整路径，失败
+        // 回退裸名。decode 导出恒为路径键；裸名后备只服务手写构造。
+        let float_bypass = match float_raw.get(field.path) {
+          Some(bs) => Some(bs)
+          None => float_raw.get(field.name)
+        }
+        match float_bypass {
           Some(bs) => {
             // 字段文本：Text 单元格直接用；**Float 单元格**是 57-68 行把
             // "NaN"/"±Infinity" 字符串解回的特殊值 —— 渲染回它的文本形式，
@@ -283,7 +289,13 @@ pub fn parse_jsonl_row(
       // 2026-11-08 审计：旧豁免把 `"-0"` 与 `"0"` 一起豁免，编辑后的
       // 正零被静默翻回负零 `00 0D`）。
       for field in layout.fields {
-        match nibbles.get(field.path) {
+        // 旁路键查找与字段值查询同款宽容度（CB-5）：先完整路径，失败
+        // 回退裸名。
+        let nib = match nibbles.get(field.path) {
+          Some(np) => Some(np)
+          None => nibbles.get(field.name)
+        }
+        match nib {
           Some((sn, pn)) =>
             match out.get(field.path) {
               Some(Text(s)) =>
