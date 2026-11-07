@@ -334,42 +334,57 @@ fn chars_sub(cs : Array[Char], start : Int32, stop : Int32) -> String {
 /// 而「列 7 恰好是 `-`」在自由格式里没有合法含义（自由格式的连字符只
 /// 出现在标识符中间，不会顶在第七列的行首），它是定长格式的**强信号**，
 /// 拿它补判不会误伤自由格式。
-fn detect_fixed_format(lines : Array[String]) -> Bool {
-  for line in lines {
+/// 追加判定的细节记录（CB-4）：文件是否**只靠**「列 7 '-'」翻成定长
+/// （无任何序号行），以及命中的物理行号 —— 用于在次生报错里提示判定
+/// 原因。`fixed_has_sequence = false && fixed_dash_line = Some(n)` 表示
+/// 翻转唯一依据是第 n 行的 '-'，此时自由格式长行被列 72 截断的次生
+/// 错误（如「字符串字面量缺少结束引号」）极易误导排查方向。
+fn detect_fixed_format_ex(lines : Array[String]) -> (Bool, Bool, Int32?) {
+  let mut dash_line : Int32? = None
+  for i, line in lines {
     let cs = line.to_array()
     if cs.length() >= 6 {
       let mut all_digits = true
-      let mut i = 0
-      while i < 6 {
-        if !is_digit_char(cs[i]) {
+      let mut i2 = 0
+      while i2 < 6 {
+        if !is_digit_char(cs[i2]) {
           all_digits = false
-          i = 6
+          i2 = 6
         } else {
-          i = i + 1
+          i2 = i2 + 1
         }
       }
       if all_digits {
-        return true
+        return (true, true, None)
       }
     }
     // 无序号定长格式的续行信号：1-6 列全空白 + 第 7 列是 `-`
     if cs.length() >= 7 && cs[6] == '-' {
       let mut all_blank = true
-      let mut i = 0
-      while i < 6 {
-        if !is_blank(cs[i]) {
+      let mut i2 = 0
+      while i2 < 6 {
+        if !is_blank(cs[i2]) {
           all_blank = false
-          i = 6
+          i2 = 6
         } else {
-          i = i + 1
+          i2 = i2 + 1
         }
       }
-      if all_blank {
-        return true
+      if all_blank && dash_line is None {
+        dash_line = Some(i + 1)
       }
     }
   }
-  false
+  match dash_line {
+    Some(_) => (true, false, dash_line)
+    None => (false, false, None)
+  }
+}
+
+///|
+/// 兼容包装：只取判定结果。
+fn detect_fixed_format(lines : Array[String]) -> Bool {
+  detect_fixed_format_ex(lines).0
 }
 
 ///|
@@ -638,7 +653,9 @@ pub fn tokenize(source : StringView) -> Array[Token] raise ParseError {
     source
   }
   let lines = split_lines(source)
-  let fixed = detect_fixed_format(lines)
+  let (fixed, fixed_has_sequence, fixed_dash_line) = detect_fixed_format_ex(
+    lines,
+  )
   let code_lines = collect_code_lines(lines, fixed)
   let toks : Array[Token] = []
   // 语句起点标记：只有这里的 1-2 位数字才当级别号
@@ -720,6 +737,17 @@ pub fn tokenize(source : StringView) -> Array[Token] raise ParseError {
           }
         }
         if !closed {
+          // CB-4（2026-11-08 审计）：文件可能因「列 7 '-' 追加判定」被
+          // 翻成定长格式，自由格式长行在列 72 被硬切 → 引号断在字面量
+          // 中间，报错根因指向错误位置。定长判定命中追加信号（无序号、
+          // 仅有 '-' 续行行）时，把判定原因写进报错，让根因可发现。
+          if !fixed_has_sequence && fixed_dash_line is Some(ln) {
+            raise LexError(
+              line_no,
+              col,
+              "字符串字面量缺少结束引号 \{quote}（本文件因第 \{ln} 行列 7 为 '-' 被判定为定长格式：长行会在列 72 被截断，若这是自由格式文件请去掉该行或给文件加序号）",
+            )
+          }
           raise LexError(
             line_no,
             col,
