@@ -566,7 +566,36 @@ fn cmd_verify(opts : Options) -> Int32 {
       return EXIT_DATA
     }
   }
-  let rec_len = layout.byte_length
+  let rec_len = match opts.record_length {
+    Some(n) => n
+    None => layout.byte_length
+  }
+  // CB-2（2026-11-08 审计）：--record-length 在白名单里承诺对 verify
+  // 合法，cmd_verify 却写死布局长度把它静默丢弃 —— 9 字节数据 +
+  // --record-length 8 报 "not a multiple of record length 4"，8 字节
+  // 时又碰巧 exit 0。消费方式与 decode 完全同款：
+  // N < 布局 → 用法错误；N > 布局 → 警告尾字节并按 N 切分。
+  if rec_len < layout.byte_length {
+    eprintln(
+      "verify: --record-length \{rec_len} is smaller than the layout length \{layout.byte_length}",
+    )
+    return EXIT_USAGE
+  }
+  if rec_len > layout.byte_length {
+    eprintln(
+      "warning: --record-length \{rec_len} exceeds the layout length \{layout.byte_length}; the trailing \{rec_len - layout.byte_length} byte(s) of each record are outside the copybook and are NOT checked against any field",
+    )
+  }
+  // N > 布局时只校验每条记录的前 layout.byte_length 字节：roundtrip_check
+  // 是「整记录重编码必须逐字节一致」的语义，直接喂 N 字节切片会因为
+  // 「重编码只有布局长」而必然 byte mismatch @ 布局长度（实测）。与
+  // decode 的「尾字节在 copybook 之外」语义对齐 —— 只对布局覆盖的字节
+  // 做往返校验。
+  let check_len = if rec_len < layout.byte_length {
+    rec_len
+  } else {
+    layout.byte_length
+  }
   // 零长度布局（如只有 `01 EMPTY.`）没有任何字段，除零会以运行时栈崩溃的
   // 方式暴露。空布局意味着「没有任何数据契约」，verify 对它无事可做。
   if rec_len == 0 {
@@ -591,7 +620,7 @@ fn cmd_verify(opts : Options) -> Int32 {
   let mut checked = 0
   let mut pos = 0
   while pos < data.length() {
-    let rec = data[pos:pos + rec_len]
+    let rec = data[pos:pos + check_len]
     match @lib.roundtrip_check(layout, rec) {
       Err(e) => {
         // CB-19：decode 与 encode 的失败含义不同，措辞必须区分 ——
