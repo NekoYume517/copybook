@@ -25,26 +25,67 @@ pub fn parse_jsonl_row(
     Object(obj) => {
       // 字节保真的旁路信息：`{"__nibbles": {"字段路径": {"sign": 12, "pad": 15}}}`
       // 见 render_jsonl / FIDELITY.md。没有这个键时行为与旧版完全一致。
+      //
+      // **内容损坏必须报错，不能静默降级**（NEW-6b，2026-11-08 审计）。
+      // NEW-6 对 `__` 保留键的承诺是「损坏必须报错，没有误伤面」，
+      // __tail_hex/__filler_hex/__float_hex 都照做，唯独这里的三种损坏
+      // 形态曾被静默吞掉：整键非对象、条目非对象、半字节超出 0..15
+      // （超域值会落进 encode 的默认分支丢掉符号 —— 与 __filler_hex
+      // 损坏后静默写 0x40 完全同型）。这些键只可能来自 decode 的输出
+      // 或蓄意构造，报错没有误伤面。
       let nibbles : Map[String, (Int32?, Int32?)] = Map([])
       match obj.get("__nibbles") {
         Some(Json::Object(nobj)) =>
           for k, jv in nobj {
             match jv {
               Object(entry) => {
-                let sn = match entry.get("sign") {
-                  Some(Json::Number(v, ..)) => Some(v.to_int())
-                  _ => None
+                let nib_val = fn(key : String) -> Result[Int32?, String] {
+                  match entry.get(key) {
+                    Some(Json::Number(v, repr~)) =>
+                      // 半字节值域 0..=15：超域值（256、1e20 的饱和/回绕）
+                      // 必须报错而不是静默落默认分支丢符号。
+                      // 大数用 repr 原文报错；无 repr 的按 Double 形式。
+                      if v != v.to_int64().to_double() ||
+                        v.to_int64() < 0L ||
+                        v.to_int64() > 15L {
+                        let shown = match repr {
+                          Some(r) => r
+                          None => v.to_string()
+                        }
+                        Err(
+                          "__nibbles['\{k}'].\{key} must be an integer in 0..=15, got \{shown}",
+                        )
+                      } else {
+                        Ok(Some(v.to_int()))
+                      }
+                    Some(Json::Null) | None => Ok(None)
+                    Some(other) =>
+                      Err(
+                        "__nibbles['\{k}'].\{key} must be a number, got \{json_kind_name(other)}",
+                      )
+                  }
                 }
-                let pn = match entry.get("pad") {
-                  Some(Json::Number(v, ..)) => Some(v.to_int())
-                  _ => None
+                let sn = match nib_val("sign") {
+                  Err(e) => return Err(e)
+                  Ok(v) => v
+                }
+                let pn = match nib_val("pad") {
+                  Err(e) => return Err(e)
+                  Ok(v) => v
                 }
                 nibbles[k] = (sn, pn)
               }
-              _ => ()
+              other =>
+                return Err(
+                  "__nibbles['\{k}'] must be an object of {sign?, pad?}, got \{json_kind_name(other)}",
+                )
             }
           }
-        _ => ()
+        Some(other) =>
+          return Err(
+            "__nibbles must be an object of {field: {sign?, pad?}}, got \{json_kind_name(other)}",
+          )
+        None => ()
       }
       // 同时按完整路径和裸名查找，兼容手写与导出的两种写法
       let out : Map[String, CellValue] = Map([])
