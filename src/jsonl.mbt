@@ -213,6 +213,8 @@ pub fn parse_jsonl_row(
                 "__float_hex['\{bkey}'] must be exactly \{want} bytes for \{kind}, got \{bs.length()}",
               )
             }
+            // 记账：该键已被布局内的浮点字段消费（CB-A4 对账用）。
+            float_raw.remove(bkey)
             // 字段文本：Text 单元格直接用；**Float 单元格**是 57-68 行把
             // "NaN"/"±Infinity" 字符串解回的特殊值 —— 渲染回它的文本形式，
             // 让下面的非有限值分支能识别（否则 NaN 会被 parse_double 的
@@ -336,10 +338,21 @@ pub fn parse_jsonl_row(
       // 正零被静默翻回负零 `00 0D`）。
       for field in layout.fields {
         // 旁路键查找与字段值查询同款宽容度（CB-5）：先完整路径，失败
-        // 回退裸名。
+        // 回退裸名。命中即从 map 里移除（CB-A4 对账用：剩下来的键就是
+        // 没有命中任何字段的损坏键）。
         let nib = match nibbles.get(field.path) {
-          Some(np) => Some(np)
-          None => nibbles.get(field.name)
+          Some(np) => {
+            nibbles.remove(field.path)
+            Some(np)
+          }
+          None =>
+            match nibbles.get(field.name) {
+              Some(np) => {
+                nibbles.remove(field.name)
+                Some(np)
+              }
+              None => None
+            }
         }
         match nib {
           Some((sn, pn)) => {
@@ -407,6 +420,48 @@ pub fn parse_jsonl_row(
             }
           }
           None => ()
+        }
+      }
+      // **键对账**（CB-A4，2026-11-10 审计）：上面两轮按字段消费时把命中
+      // 的键从 map 里移除，这里还剩着的键要分两类：
+      //   - 指向**不存在字段**（或浮点键落在非浮点字段上）→ 损坏，报错。
+      //     decode 写出的键恒为布局内字段，静默忽略会让符号/原始字节
+      //     信息无声丢失。
+      //   - 指向**真实字段**但被同字段的路径键遮蔽（CB-5：裸名与路径
+      //     同时出现时路径优先）→ 合法冗余，沿用字段值同键双写的宽容。
+      let nib_known = fn(k : String) -> Bool {
+        for f in layout.fields {
+          if f.path == k || f.name == k {
+            return true
+          }
+        }
+        false
+      }
+      let float_known = fn(k : String) -> Bool {
+        for f in layout.fields {
+          let is_float = match f.pic.usage {
+            Comp1 => true
+            Comp2 => true
+            _ => false
+          }
+          if (f.path == k || f.name == k) && is_float {
+            return true
+          }
+        }
+        false
+      }
+      for k in nibbles.keys() {
+        if !nib_known(k) {
+          return Err(
+            "__nibbles['\{k}'] does not match any field in this copybook",
+          )
+        }
+      }
+      for k in float_raw.keys() {
+        if !float_known(k) {
+          return Err(
+            "__float_hex['\{k}'] does not match any COMP-1/COMP-2 field in this copybook",
+          )
         }
       }
       // 尾部字节旁路（CB-9）：render_jsonl 写出的 `__tail_hex` 在这里还原成
