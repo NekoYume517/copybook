@@ -271,9 +271,35 @@ fn ParserState::ident_here(self : ParserState) -> String? {
 ///
 /// 每个顶层数据项（通常是 `01`，也可能是 `77`）对应返回数组的一个元素。
 /// 88 条件名与 66 RENAMES 不进树，需要时用 `parse_copybook_with_extras`。
+///
+/// 错误经过 `note_format_flip` 包装（CB-B8）：本函数是**唯一**的解析入口，
+/// 在这里附注「文件被判定为定长格式及其依据」才能覆盖 parser 侧的
+/// `SyntaxError`（p16 就是这类：词法没错，级别号被列切掉后语法报错）。
+/// `tokenize` 内部也包了一层，覆盖只调用 `tokenize` 的调用方。
 pub fn parse_copybook(source : StringView) -> Array[FieldSpec] raise ParseError {
   let p = new_parser(tokenize(source))
-  parse_program(p)
+  try parse_program(p) catch {
+    e => raise annotate_flip(e, source)
+  } noraise {
+    roots => roots
+  }
+}
+
+///|
+/// 按源码重新做一次格式判定，给错误附加「定长判定」说明（CB-B8）。
+///
+/// 判定是纯函数且代价极低（逐行看前 7 列），重算一次比把判定结果一路
+/// 透传过 parser 更省事，也不会漏掉任何调用路径。
+fn annotate_flip(err : ParseError, source : StringView) -> ParseError {
+  let src = if source.length() > 0 && source[0] == 0xFEFF {
+    source[1:]
+  } else {
+    source
+  }
+  let (fixed, has_sequence, dash_line) = detect_fixed_format_ex(
+    split_lines(src),
+  )
+  note_format_flip(err, fixed, has_sequence, dash_line)
 }
 
 ///|
@@ -282,8 +308,12 @@ pub fn parse_copybook_with_extras(
   source : StringView,
 ) -> (Array[FieldSpec], Array[ConditionName], Array[RenamesEntry]) raise ParseError {
   let p = new_parser(tokenize(source))
-  let roots = parse_program(p)
-  (roots, p.conditions, p.renames)
+  try {
+    let roots = parse_program(p)
+    (roots, p.conditions, p.renames)
+  } catch {
+    e => raise annotate_flip(e, source)
+  }
 }
 
 ///|

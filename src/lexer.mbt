@@ -636,6 +636,44 @@ fn is_pic_continuation(run : Array[Char]) -> Bool {
 }
 
 ///|
+/// 给任意 Lex / Syntax 错误附加「本文件被判定为定长格式的原因」（CB-B8）。
+///
+/// CB-4 只把判定原因写进**一条**错误路径（`tokenize` 里「字符串字面量缺少
+/// 结束引号」）。实测 `_probe/p16_flip.cpy` 走的是完全不同的路径：
+///
+///     01 R.
+///       05 A PIC S9(4)V99 VALUE
+///           -123.45.        <- 6 空格 + '-'，命中追加判定
+///
+/// 整文件翻成定长后每行前 7 列被切掉，级别号消失，parser 报
+/// `2:8: 期望数据描述项（以级别号开头），得到 关键字 'PIC'` —— 既没指向
+/// 真正的第 3 行，也没说「格式被判成定长」这个根因。
+///
+/// 修法不是收窄翻转信号（那会回退 RJ-2 的无序号续行能力，`continuation_test`
+/// 与 `format_detect_guard_test` 都锁定了它），而是把判定原因**统一附注**到
+/// 所有会因翻转而失真的错误上。`InvalidLayout` 是布局层错误、与格式判定
+/// 无关，不附注。
+fn note_format_flip(
+  err : ParseError,
+  fixed : Bool,
+  has_sequence : Bool,
+  dash_line : Int32?,
+) -> ParseError {
+  // 只在本文件**仅凭**「列 7 '-'」翻转时附注：有真实序号区的定长文件
+  // 是用户明确声明的格式，语法错误不该被疑似格式问题带偏。
+  if fixed && !has_sequence && dash_line is Some(ln) {
+    let note = "（本文件因第 \{ln} 行列 7 为 '-' 被判定为定长格式：每行前 7 列被当作序号区/指示符丢弃、长行在列 72 被截断；若这是自由格式文件，请改掉第 \{ln} 行或给文件加序号）"
+    match err {
+      LexError(l, c, m) => LexError(l, c, m + note)
+      SyntaxError(l, c, m) => SyntaxError(l, c, m + note)
+      InvalidLayout(m) => InvalidLayout(m)
+    }
+  } else {
+    err
+  }
+}
+
+///|
 /// 词法分析主入口。
 ///
 /// 返回的 token 数组**总是**以 `Eof` 结尾（不抛异常时）。
@@ -644,18 +682,32 @@ fn is_pic_continuation(run : Array[Char]) -> Bool {
 /// 先由 `collect_code_lines` 把物理行切成逻辑行（固定格式：列 7 指示符、
 /// 列 73-80 忽略、列 7 `-` 续行；自由格式：整行都是代码区），再逐逻辑行
 /// 扫描。续行内容按拼接后的位置递增列号，报错指到被续接的那一行。
+///
+/// 格式判定只做一次，判定结果供 `note_format_flip` 给错误附加根因说明
+/// （CB-B8）—— 所以真正的扫描在 `tokenize_lines` 里。
 pub fn tokenize(source : StringView) -> Array[Token] raise ParseError {
   // 剥掉 UTF-8 BOM（U+FEFF）。Windows 上的编辑器/PowerShell 重定向经常
   // 把它写进文件头，词法层不处理的话整份 copybook 直接报「无法识别的字符」。
-  let source = if source.length() > 0 && source[0] == 0xFEFF {
+  let src = if source.length() > 0 && source[0] == 0xFEFF {
     source[1:]
   } else {
     source
   }
-  let lines = split_lines(source)
-  let (fixed, fixed_has_sequence, fixed_dash_line) = detect_fixed_format_ex(
-    lines,
-  )
+  let lines = split_lines(src)
+  let (fixed, has_sequence, dash_line) = detect_fixed_format_ex(lines)
+  try tokenize_lines(lines, fixed) catch {
+    e => raise note_format_flip(e, fixed, has_sequence, dash_line)
+  } noraise {
+    toks => toks
+  }
+}
+
+///|
+/// 真正的逐行扫描（格式判定由 `tokenize` 决定后传入）。
+fn tokenize_lines(
+  lines : Array[String],
+  fixed : Bool,
+) -> Array[Token] raise ParseError {
   let code_lines = collect_code_lines(lines, fixed)
   let toks : Array[Token] = []
   // 语句起点标记：只有这里的 1-2 位数字才当级别号
@@ -737,17 +789,9 @@ pub fn tokenize(source : StringView) -> Array[Token] raise ParseError {
           }
         }
         if !closed {
-          // CB-4（2026-11-08 审计）：文件可能因「列 7 '-' 追加判定」被
-          // 翻成定长格式，自由格式长行在列 72 被硬切 → 引号断在字面量
-          // 中间，报错根因指向错误位置。定长判定命中追加信号（无序号、
-          // 仅有 '-' 续行行）时，把判定原因写进报错，让根因可发现。
-          if !fixed_has_sequence && fixed_dash_line is Some(ln) {
-            raise LexError(
-              line_no,
-              col,
-              "字符串字面量缺少结束引号 \{quote}（本文件因第 \{ln} 行列 7 为 '-' 被判定为定长格式：长行会在列 72 被截断，若这是自由格式文件请去掉该行或给文件加序号）",
-            )
-          }
+          // CB-4 曾在这里内联拼「定长判定」说明；CB-B8 改为由
+          // `note_format_flip` 在 `tokenize` 外层**对所有** Lex/SyntaxError
+          // 统一附注（本路径也要覆盖，否则同一条根因在两处维护、措辞会漂）。
           raise LexError(
             line_no,
             col,
