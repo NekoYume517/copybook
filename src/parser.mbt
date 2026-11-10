@@ -495,6 +495,24 @@ fn build_children(
     }
     let (kids, next_i) = build_children(flat, i, e.level, down)
     i = next_i
+    // 77 是**独立项**（standalone item）：COBOL 规定它只能是顶层项，
+    // 不参与层级号建树、不能挂在任何组里（CB-B11，2026-11-10 审计）。
+    //
+    // 旧实现只按 `level > parent_level` 判子树，77 便自然成了前一个组的
+    // 子项：`01 R. 05 G. 77 C PIC X(1).` 给出 `R.G.C` 这个 COBOL 里不存在
+    // 的路径，记录长度静默变成 1，exit 0。
+    //
+    // 不「帮忙提到顶层」：本实现把多个顶层项并列拼接（见 compile_layout），
+    // 提升会静默改变记录长度与偏移；留在组内则造假路径。两者都是静默修正，
+    // 按第一原则显式报错。`parent_level == 0` 时是顶层 77（`77 WS-FLAG
+    // PIC X(1).` 与 01 并列的合法用法），保持既有处理。
+    if e.level == 77 && parent_level != 0 {
+      raise SyntaxError(
+        e.line,
+        1,
+        "77 级项 '\{e.name}' 不能出现在组内（第 \{parent_level} 级项的子树里）：COBOL 规定 77 是独立项，只能作为顶层数据项出现，不参与层级号建树",
+      )
+    }
     // 基本项（有 PIC）不能再挂子项
     if kids.length() > 0 {
       match e.pic {
