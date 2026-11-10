@@ -155,14 +155,47 @@ pub fn parse_jsonl_row(
         _ => ()
       }
       for field in layout.fields {
+        // __float_hex 只服务浮点字段：decode 只为 COMP-1/COMP-2 写这个键
+        // （output.mbt 只在 FloatRaw 时发出）。其他字段上的条目保持未消费，
+        // 由键对账统一报错，而不是给一条误导性的长度报错。
+        let is_float_usage = match field.pic.usage {
+          Comp1 => true
+          Comp2 => true
+          _ => false
+        }
+        if !is_float_usage {
+          continue
+        }
+        let is_comp2 = match field.pic.usage {
+          Comp2 => true
+          _ => false
+        }
         // 旁路键查找与字段值查询同款宽容度（CB-5）：先完整路径，失败
         // 回退裸名。decode 导出恒为路径键；裸名后备只服务手写构造。
         let float_bypass = match float_raw.get(field.path) {
-          Some(bs) => Some(bs)
-          None => float_raw.get(field.name)
+          Some(bs) => Some((field.path, bs))
+          None =>
+            match float_raw.get(field.name) {
+              Some(bs) => Some((field.name, bs))
+              None => None
+            }
         }
         match float_bypass {
-          Some(bs) => {
+          Some((bkey, bs)) => {
+            // **长度必须精确**（CB-A1，2026-11-10 审计）：decode 写出的
+            // 旁路恒为 COMP-2 8 字节 / COMP-1 4 字节。短了会让下面的 HFP
+            // 解码固定读 8/4 字节而越界 panic（没有任何业务错误信息的
+            // 契约外第六态）；长了会被静默截断、按截断值重编码 exit 0
+            // （`4180000000000001` + 8 字节零尾 → 写出 `4180000000000000`）。
+            // 两种都是「损坏必须报错」要拒绝的形态，与奇数长度 / 非法
+            // hex 字符的既有报错同一哲学。
+            let want = if is_comp2 { 8 } else { 4 }
+            if bs.length() != want {
+              let kind = if is_comp2 { "COMP-2" } else { "COMP-1" }
+              return Err(
+                "__float_hex['\{bkey}'] must be exactly \{want} bytes for \{kind}, got \{bs.length()}",
+              )
+            }
             // 字段文本：Text 单元格直接用；**Float 单元格**是 57-68 行把
             // "NaN"/"±Infinity" 字符串解回的特殊值 —— 渲染回它的文本形式，
             // 让下面的非有限值分支能识别（否则 NaN 会被 parse_double 的
@@ -224,13 +257,9 @@ pub fn parse_jsonl_row(
             // NaN 特判：文本 "NaN" 解析不出数值，但 decode 写 "NaN" 的前提
             // 就是字节本身非有限 —— 文本与字节都不有限即视为一致（符号位与
             // payload 仍由旁路字节保真）。
-            let is_comp2 = match field.pic.usage {
-              Comp2 => true
-              _ => false
-            }
-            let want = if is_comp2 { 8 } else { 4 }
             let mut raw : UInt64 = 0UL
-            for i = 0; i < want && i < bs.length(); i = i + 1 {
+            // 长度已在入口精确校验为 want（CB-A1），这里不会越界。
+            for i = 0; i < want; i = i + 1 {
               raw = (raw << 8) | bs[i].to_int().to_uint64()
             }
             // **用与 decode 相同的解释函数**读旁路字节：HFP 字节必须按 HFP
