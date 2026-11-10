@@ -210,10 +210,22 @@ fn group_pic(byte_length : Int32) -> PicClause {
 ///   `9(8) DISPLAY`、`X(30) DISPLAY`、`S9(7)V99 COMP-3`
 ///
 /// 规则：
-///   - Numeric: `S`? `9(digits)` (`V` + 9^scale)? 空格 usage
+///   - Numeric: `S`? `9(digits)` (`V` + 9^scale)? 空格 usage；**P 缩放位
+///     必须显形**（CB-B9）：尾随 P 追加在数字位之后，前导 P 追加在之前
 ///   - X/A:     `X(n)` 空格 DISPLAY（A 也渲染成 A(n)，保留可读差异）
 ///   - N:       `N(n)` 空格 DISPLAY
 ///   - Edited:  原样 digits 位占位，附 EDIT
+///
+/// **P 为什么不能省**（CB-B9，2026-11-10 审计）：`PIC 9(3)PP` 的
+/// digits=3 / scale=-2（值 = 系数 × 10^2），旧渲染只打印 `9(3)`，与真正的
+/// `PIC 9(3)` **报告完全同形**，而两者差 100 倍。`PIC PP9(2)` 更糟：打的是
+/// `9(0)V9999`，把一个"小数点在最左、乘 10^-4"的字段说成"9 位小数"。
+/// 数值与字节往返都是对的，错的只有报告 —— 但拿布局报告复核数据字典的人
+/// 会直接读错量级，所以 TYPE 列必须能看见 P 的形态。
+///
+/// 渲染不直接回放 `pic_text`：既有输出是把 `999` 归一化成 `9(3)` 的形式，
+/// 回放原文会让 `PIC 999V9` 从 `9(3)V9` 变成 `999V9`（无关的格式漂移）。
+/// 这里按 digits/scale/storage_digits 反推 P 的位置，归一化风格保持不变。
 pub fn pic_type_name(pic : PicClause) -> String {
   let sb = StringBuilder()
   match pic.category {
@@ -238,13 +250,37 @@ pub fn pic_type_name(pic : PicClause) -> String {
       sb.write_string(")")
     }
     Numeric => {
+      // P 的形态由 digits / scale / storage_digits 三者反推（CB-B9）：
+      //   - 前导 P：digits == 0，scale > storage_digits（多出来的是 P 位）
+      //   - 尾随 P：scale < 0，其绝对值就是尾随 P 个数
+      //   - 其余：既无 P，按 `S9(digits)` + 可选 `V9^scale` 渲染（原样）
+      let leading_p = if pic.digits == 0 && pic.scale > pic.storage_digits {
+        pic.scale - pic.storage_digits
+      } else {
+        0
+      }
+      let trailing_p = if pic.scale < 0 { -pic.scale } else { 0 }
       if pic.signed {
         sb.write_string("S")
       }
+      for i = 0; i < leading_p; i = i + 1 {
+        sb.write_string("P")
+      }
       sb.write_string("9(")
-      sb.write_string(pic.digits.to_string())
+      sb.write_string(
+        if leading_p > 0 {
+          // 前导 P 时全部存储位都是小数位，digits 为 0 不具可读性，
+          // 报告里给真实存储宽度（`PP9(2)` 而不是 `PP9(0)`）。
+          pic.storage_digits.to_string()
+        } else {
+          pic.digits.to_string()
+        },
+      )
       sb.write_string(")")
-      if pic.scale > 0 {
+      for i = 0; i < trailing_p; i = i + 1 {
+        sb.write_string("P")
+      }
+      if pic.scale > 0 && leading_p == 0 {
         sb.write_string("V")
         for i = 0; i < pic.scale; i = i + 1 {
           sb.write_string("9")
