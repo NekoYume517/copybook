@@ -86,6 +86,7 @@ test "redefines tail: gap after a single primary field is preserved (manual layo
       usage: Display,
       sign_separate: false,
       sign_leading: false,
+      justified_right: false,
       pic_text: "X(3)",
     },
     level: 5,

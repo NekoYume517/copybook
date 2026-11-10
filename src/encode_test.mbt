@@ -55,6 +55,7 @@ fn e_one(
     usage,
     sign_separate,
     sign_leading: false,
+    justified_right: false,
     pic_text: "",
   }
   let spec : FieldSpec = {

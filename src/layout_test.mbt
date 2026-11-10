@@ -16,6 +16,7 @@ fn pic_numeric(
     usage,
     sign_separate: false,
     sign_leading: false,
+    justified_right: false,
     pic_text: "",
   }
 }
@@ -31,6 +32,7 @@ fn pic_x(n : Int32) -> PicClause {
     usage: Display,
     sign_separate: false,
     sign_leading: false,
+    justified_right: false,
     pic_text: "",
   }
 }
@@ -221,6 +223,7 @@ test "N(n) 双字节" {
     usage: Display,
     sign_separate: false,
     sign_leading: false,
+    justified_right: false,
     pic_text: "",
   }
   let specs = [group(1, "R", [leaf(5, "A", pic)])]

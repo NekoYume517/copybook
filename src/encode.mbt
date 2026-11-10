@@ -356,14 +356,22 @@ fn encode_binary(
 }
 
 ///|
-/// 编码文本字段：EBCDIC 编码后右侧补 0x40 到固定宽度。
+/// 编码文本字段：EBCDIC 编码后按对齐方式补 0x40 到固定宽度。
 ///
-/// 超长**报错**（不截断）—— 截断会静默丢数据。
+/// `justified_right` 为 true 时**左侧**补空格（右对齐），否则右侧补（左对齐，
+/// COBOL 默认）。超长**报错**（不截断）—— 截断会静默丢数据。
+///
+/// 右对齐是 IBM 的 `JUSTIFIED RIGHT` 语义（CB-B5，2026-11-10 审计）：
+/// `PIC X(5) JUSTIFIED RIGHT` 上写 `"AB"` 必须落盘为 `40 40 40 C1 C2`，
+/// 而不是左对齐的 `C1 C2 40 40 40`。旧实现恒左对齐，主机按右对齐解读时
+/// 值是 `"  AB"` 而非 `"AB"`，且同一份 copybook 上 verify 因布局自洽
+/// 仍报 byte-identical —— 值被静默改变。
 fn encode_text(
   w : Writer,
   offset : Int32,
   width : Int32,
   s : StringView,
+  justified_right : Bool,
 ) -> Result[Unit, DecodeError] {
   let strict = ebcdic_encode_strict(s)
   let codes = match strict {
@@ -381,12 +389,15 @@ fn encode_text(
       InvalidNumeric(offset, "text length \{n} exceeds field width \{width}"),
     )
   }
-  for i = 0; i < n; i = i + 1 {
-    w.set(offset + i, codes[i])
+  // 右对齐：前面补空格；左对齐：值从 offset 起、尾部补空格。
+  let pad = width - n
+  let start = if justified_right { pad } else { 0 }
+  for i = 0; i < pad; i = i + 1 {
+    let at = if justified_right { i } else { n + i }
+    w.set(offset + at, 0x40)
   }
-  // 尾部填充 EBCDIC 空格 0x40
-  for i = n; i < width; i = i + 1 {
-    w.set(offset + i, 0x40)
+  for i = 0; i < n; i = i + 1 {
+    w.set(offset + start + i, codes[i])
   }
   Ok(())
 }
@@ -643,11 +654,21 @@ fn encode_field(
       }
       Ok(())
     }
-    Edited | Alphanumeric | Alphabetic =>
-      match encode_text(w, offset, length, as_text(v)) {
+    // 右对齐只对**字符类**生效（CB-B5）：COBOL 的 JUSTIFIED 对数值与编辑型
+    // 不产生对齐效果，两者按原样编码（编辑型是模式串展开的显示串，右对齐
+    // 会破坏小数点/符号的位置）。
+    Edited =>
+      match encode_text(w, offset, length, as_text(v), false) {
         Ok(_) => Ok(())
         Err(e) => Err(e)
       }
+    Alphanumeric | Alphabetic => {
+      let jr = pic.justified_right
+      match encode_text(w, offset, length, as_text(v), jr) {
+        Ok(_) => Ok(())
+        Err(e) => Err(e)
+      }
+    }
     Numeric =>
       match pic.usage {
         Display => {

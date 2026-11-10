@@ -178,7 +178,7 @@ copybook decode --copybook app.cpy --data app.dat --float-mode ieee
 | `COMP-3` 打包十进制 | ✅ |
 | `COMP-1` / `COMP-2` 浮点 | ✅ 默认 IBM HFP；`--float-mode ieee` 切 IEEE 754 |
 | `OCCURS n TIMES` | ✅ |
-| `REDEFINES` | ✅ |
+| `REDEFINES` | ✅ 视图必须与目标**同层同父**，且不得与其他字段的字节重叠（见下方限制） |
 | `SIGN ... SEPARATE` | ✅ |
 | 固定格式列 7 `-` 续行（`PIC` / `VALUE` 跨行） | ✅ 仅固定格式；自由格式没有续行符，行首 `-` 报错 |
 | 列 73-80 标识区 | ✅ 固定格式下忽略（行长必须真的写到第 73 列） |
@@ -186,6 +186,8 @@ copybook decode --copybook app.cpy --data app.dat --float-mode ieee
 | `OCCURS DEPENDING ON` | 按上界展开（固定长度存储），`occurs_depending_on` 字段记录依赖名 |
 | 多个 `01` 层级 | **并列拼接为一条记录**（见下方说明） |
 | 组级 `USAGE` | ✅ 子项继承 |
+| 组级 `SIGN`（`LEADING` / `SEPARATE`） | ✅ 子项继承（只作用于带符号数值项；叶子上显式写的 SIGN 优先） |
+| `JUSTIFIED RIGHT` / `JUST RIGHT` | ✅ 字符类右对齐（左侧补 `0x40`）；数值与编辑型不受影响 |
 
 **`PIC N(n)` 的容量单位是 UTF-16 码元，不是「字符个数」**：`N(n)` 占 `2n` 字节，
 每个码元 2 字节，不足补 `00 20`（U+0020）。基本平面（BMP）字符占 1 码元，
@@ -200,6 +202,15 @@ copybook decode --copybook app.cpy --data app.dat --float-mode ieee
 绝不截断成半个代理对。回归测试：`src/national_capacity_test.mbt`。
 
 ### 已声明的简化
+
+**`REDEFINES` 的两条形态限制**（CB-B10，2026-11-10 审计）：重定义项必须与
+被重定义项**同层同父**（跨 `01`、跨组一律拒绝），且视图跨度不得与**其他字段**
+的字节重叠（`REDEFINES` 只能重新描述它自己那段存储）。违反时报
+`InvalidLayout` 并点名视图与相撞的字段。视图**短于**目标（部分重定义）、
+视图**长于**目标但超出部分只落在记录尾部空洞（字节由 `__tail_hex` /
+`__filler_hex` 保真）、01 层之外的正常重定义组都仍然受支持。
+不做「必须紧邻前项」的校验：重定义链（`D REDEFINES A REDEFINES B`）合法且
+复杂，收益小于风险。
 
 **多个 `01` 层级**：COBOL 语义里每个 `01` 是一条独立记录（一个文件里可以
 有多种记录型态）。本实现把后续 `01` **并列拼接**成一条更长的记录——

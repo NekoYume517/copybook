@@ -120,6 +120,17 @@ pub(all) struct PicClause {
   usage : Usage
   sign_separate : Bool
   sign_leading : Bool // SIGN SEPARATE 的位置：true = LEADING（符号字节在前），false = TRAILING
+  /// 声明了 `JUSTIFIED RIGHT` / `JUST RIGHT`（CB-B5，2026-11-10 审计）。
+  ///
+  /// IBM 语义：字符项的值**右对齐、左侧补空格**。旧实现把子句整段吃掉、
+  /// 编码恒左对齐，于是 `PIC X(5) JUSTIFIED RIGHT` 上写 `"AB"` 落盘是
+  /// `C1 C2 40 40 40`，主机按右对齐读成 `"  AB"` —— 值被静默改变，而
+  /// `verify` 因布局自洽仍报 byte-identical（同一条 copybook 上
+  /// decode→encode 当然一致）。
+  ///
+  /// 只对字符类（X / A）有意义：数值与编辑型的 JUSTIFIED 在 COBOL 里
+  /// 不产生对齐效果，编码路径按原样处理（见 encode_text 的调用方）。
+  justified_right : Bool
   pic_text : String // PIC 模式串原文（大写），供布局层兜底
 }
 
@@ -485,7 +496,8 @@ fn is_numeric_category(c : PicCategory) -> Bool {
 
 ///|
 /// Usage 的结构相等比较（enum 无参数变体；类型未实现 Eq trait）。
-fn usage_same(a : Usage, b : Usage) -> Bool {  match (a, b) {
+fn usage_same(a : Usage, b : Usage) -> Bool {
+  match (a, b) {
     (Display, Display) => true
     (Comp, Comp) => true
     (Comp3, Comp3) => true
@@ -591,13 +603,10 @@ fn build_children(
         // 自然带上（layout.mbt 的 pic_byte_length，只有 Display 数值吃 +1）。
         match inherited_sign {
           Some((leading, separate)) =>
-            if !e.sign_declared && base.signed &&
+            if !e.sign_declared &&
+              base.signed &&
               is_numeric_category(base.category) {
-              Some({
-                ..base,
-                sign_leading: leading,
-                sign_separate: separate,
-              })
+              Some({ ..base, sign_leading: leading, sign_separate: separate, })
             } else {
               Some(base)
             }
@@ -671,6 +680,8 @@ fn parse_entry_clauses(
   // 本项**自己写了** SIGN 子句（CB-B6）：组级 SIGN 只在叶子未声明时继承。
   // 必须独立记标志 —— `sign_leading = false`（TRAILING）与「没写」同值。
   let mut sign_declared = false
+  // 声明了 JUSTIFIED RIGHT（CB-B5）：编码时右对齐、左侧补 0x40。
+  let mut is_justified_right = false
 
   while !p.at_eof() && !p.at_dot() {
     let tok = p.peek()
@@ -802,15 +813,25 @@ fn parse_entry_clauses(
       continue
     }
 
-    // ---- 对布局无影响的修饰子句 ----
+    // ---- JUSTIFIED / JUST [RIGHT|LEFT] ----
     if p.at_keyword("JUSTIFIED") || p.at_keyword("JUST") {
       let _ = p.advance()
-      // RIGHT / LEFT 在词法层是普通标识符，这里一并吃掉
-      let _ = p.eat_keyword("RIGHT")
+      // `JUSTIFIED` 单独出现时 COBOL 的隐含值是 RIGHT；`JUSTIFIED LEFT`
+      // 是显式的默认行为。RIGHT / LEFT 在词法层是普通标识符。
+      let mut right = true
       match p.ident_here() {
-        Some(w) => if w == "RIGHT" || w == "LEFT" { let _ = p.advance() }
+        Some(w) =>
+          if w == "RIGHT" {
+            let _ = p.advance()
+          } else if w == "LEFT" {
+            let _ = p.advance()
+            right = false
+          }
         None => ()
       }
+      // 记录标志（CB-B5）：旧实现整段吃掉、编码恒左对齐，IBM 的右对齐
+      // 语义因此完全失效（详见 PicClause.justified_right）。
+      is_justified_right = right
       continue
     }
     if p.at_keyword("SYNC") || p.at_keyword("SYNCHRONIZED") {
@@ -898,6 +919,9 @@ fn parse_entry_clauses(
         usage: u,
         sign_separate,
         sign_leading,
+        // 右对齐标志（CB-B5）：只对字符类生效，其余类别按原样透传、
+        // 由编码路径忽略（数值 / 编辑型的 JUSTIFIED 在 COBOL 里无效果）。
+        justified_right: is_justified_right,
         pic_text: pc.pic_text,
       })
     }
@@ -916,6 +940,7 @@ fn parse_entry_clauses(
             },
             sign_separate: false,
             sign_leading: false,
+            justified_right: false,
             pic_text: match explicit_usage {
               Some(Comp1) => "COMP-1"
               _ => "COMP-2"
@@ -941,11 +966,12 @@ fn parse_entry_clauses(
   // final_pic 里合并，不再作为继承源。
   let group_sign : (Bool, Bool)? = match pic {
     Some(_) => None
-    None => if sign_declared {
-      Some((sign_leading, sign_separate))
-    } else {
-      None
-    }
+    None =>
+      if sign_declared {
+        Some((sign_leading, sign_separate))
+      } else {
+        None
+      }
   }
 
   {
@@ -1275,6 +1301,7 @@ pub fn parse_pic_clause(
       usage: Display,
       sign_separate: false,
       sign_leading: false,
+      justified_right: false,
       pic_text: text,
     }
   }
@@ -1370,6 +1397,7 @@ pub fn parse_pic_clause(
     usage: Display,
     sign_separate: false,
     sign_leading: false,
+    justified_right: false,
     pic_text: text,
   }
 }
@@ -1453,6 +1481,7 @@ fn parse_edited(
     usage: Display,
     sign_separate: false,
     sign_leading: false,
+    justified_right: false,
     pic_text: text,
   }
 }

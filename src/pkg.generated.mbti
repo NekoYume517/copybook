@@ -192,6 +192,7 @@ pub(all) struct PicClause {
   usage : Usage
   sign_separate : Bool
   sign_leading : Bool
+  justified_right : Bool
   pic_text : String
 }
 
