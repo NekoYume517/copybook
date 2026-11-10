@@ -213,6 +213,11 @@ pub(all) suberror DecodeError {
   /// 变更：既有调用方按 `DecodeError` 匹配时，未覆盖该分支会显式报错而不是
   /// 静默走错路径；`to_display` 已给出对应文案。
   EncodeFailed(String)
+  /// 旁路键（`__tail_hex` / `__filler_hex`）的字节数与布局的空洞区间
+  /// 不符（CB-A2，2026-11-10 审计）。decode 写出的旁路恒为精确空洞
+  /// 字节集，长度不对只可能是损坏或蓄意构造——短缺曾被静默写成 0x40、
+  /// 超长曾被静默忽略，两者都让「无损往返」变成 exit 0 的静默改字节。
+  InvalidBypass(String)
 }
 
 ///|
@@ -230,6 +235,7 @@ pub fn DecodeError::to_display(self : DecodeError) -> String {
     FieldOutOfBounds(field, offset, length) =>
       "field '\{field}' out of bounds: offset \{offset}, length \{length}"
     EncodeFailed(detail) => "encode failed after a successful decode: \{detail}"
+    InvalidBypass(detail) => "invalid bypass key: \{detail}"
   }
 }
 

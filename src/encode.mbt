@@ -1104,13 +1104,48 @@ pub fn encode_record(
     }
     _ => {
       // JSONL 路径：各键独立回填（缺哪个就跳过哪个）。
+      //
+      // **字节数必须与空洞总数精确相等**（CB-A2，2026-11-10 审计）：
+      // restore 闭包 `if src < bs.length()` 对短缺静默写 0x40、对超长
+      // 静默忽略——文件截断/传输损坏之后「无损往返」变成 exit 0 的
+      // 静默改字节，正是 NEW-6 拒绝的形态（奇数长度/非 hex 报错，
+      // 长度损坏是漏网的同型）。decode 写出的旁路恒为精确空洞集，
+      // 长度不对只可能是损坏，报错没有误伤面。
+      let gap_total = fn(gaps : Array[(Int32, Int32)]) -> Int32 {
+        let mut n = 0
+        for (s, e) in gaps {
+          n = n + (e - s)
+        }
+        n
+      }
       match values.get("__tail_hex") {
-        Some(Bytes(bs)) =>
-          restore(primary_tail_gaps(layout, Some(values)), bs, false)
+        Some(Bytes(bs)) => {
+          let gaps = primary_tail_gaps(layout, Some(values))
+          let need = gap_total(gaps)
+          if bs.length() != need {
+            return Err(
+              InvalidBypass(
+                "__tail_hex must be exactly \{need} byte(s) for this record's tail gap(s), got \{bs.length()}",
+              ),
+            )
+          }
+          restore(gaps, bs, false)
+        }
         _ => ()
       }
       match values.get("__filler_hex") {
-        Some(Bytes(bs)) => restore(filler_gaps(layout, Some(values)), bs, false)
+        Some(Bytes(bs)) => {
+          let gaps = filler_gaps(layout, Some(values))
+          let need = gap_total(gaps)
+          if bs.length() != need {
+            return Err(
+              InvalidBypass(
+                "__filler_hex must be exactly \{need} byte(s) for this record's FILLER gap(s), got \{bs.length()}",
+              ),
+            )
+          }
+          restore(gaps, bs, false)
+        }
         _ => ()
       }
     }
