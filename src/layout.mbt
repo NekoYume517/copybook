@@ -302,6 +302,89 @@ pub fn pic_type_name(pic : PicClause) -> String {
 }
 
 ///|
+/// REDEFINES 形态校验第 1 条：**同层同父**（CB-B10，2026-11-10 审计）。
+///
+/// COBOL 的 `REDEFINES` 语义是「把**紧邻前项**的存储重新描述一遍」，所以
+/// 目标必须是**同一父项下的兄弟项**。跨父项重定义（`01 A` 下的 `X` 被
+/// `01 B` 下的 `Y` 重定义）在 COBOL 里根本不存在这种写法，而旧实现只按
+/// 全局名字表 `by_name` 找偏移，于是跨 01、跨组一律照做，exit 0。
+///
+/// 危害：`01` 之间本可按记录型态复用字节，但本实现把它们**并列拼接**
+/// （见 `compile_layout` 的说明），跨 01 重定义会让视图指回前一条记录的
+/// 字节 —— 布局自洽、verify 报 byte-identical，而记录语义已经错了。
+///
+/// 只查「目标存在且同父」，长度约束在 `check_redefine_overlap`（需要偏移，
+/// 布局算完之后才能判）。
+fn check_redefine_parentage(
+  siblings : Array[FieldSpec],
+) -> Unit raise ParseError {
+  for spec in siblings {
+    match spec.redefines {
+      Some(target_name) => {
+        let want = target_name.to_lower()
+        let mut found = false
+        for other in siblings {
+          if other.name.to_lower() == want && other.name != spec.name {
+            found = true
+          }
+          // 同名时按定义顺序取前一个：COBOL 里重定义自己无意义，
+          // 这里仅用于「同名兄弟」这种本实现已另行拒绝的形态。
+        }
+        if !found {
+          raise InvalidLayout(
+            "'\{spec.name}' REDEFINES '\{target_name}', but '\{target_name}' is not a sibling under the same parent item (line \{spec.line}): COBOL requires the redefined item to be in the same group (same level, same parent); cross-01 and cross-group REDEFINES are invalid",
+          )
+        }
+      }
+      None => ()
+    }
+    check_redefine_parentage(spec.children)
+  }
+}
+
+///|
+/// REDEFINES 形态校验第 2 条：**视图不得吞掉其他字段的字节**（CB-B10）。
+///
+/// 审计要求的原始措辞是「视图长度 ≤ 目标长度（01 层除外）」。字面实现会
+/// 打掉 6 条既有锁定测试，它们正是 CB-9 / CB-15 / CB-16 建立的尾部保真
+/// 机制（视图比主视图长、超出部分落在**没有其他字段**的区间，字节由
+/// `__tail_hex` / `__filler_hex` 保真）。两者要拦的缺陷并不相同：
+///
+///   - `05 A X(2). 05 B X(2). 05 C REDEFINES A X(4).`
+///     → C 的 4 字节覆盖 A(0..2) **和 B(2..4)**：B 的数据被 C 无声吃掉，
+///     decode 解两遍、encode 后写的视图盖掉 B 的值。
+///   - `05 M COMP-3(3). 05 A REDEFINES M { RAW X(4) }`
+///     → RAW 的超出部分（2..4）没有任何其他字段，是纯尾部空洞。
+///
+/// 所以判据取「视图跨度不得与**不同重定义组**的叶子重叠」，它精确命中
+/// 前者、放过后者，语义上就是「REDEFINES 只能重新描述它自己的那段存储」。
+///
+/// `01` 层不豁免：本实现把多个 01 并列拼接成一条记录，跨 01 的字节重叠
+/// 同样是数据损坏 —— 跨 01 的**父项**问题已由 `check_redefine_parentage`
+/// 拦下，能走到这里的 01 视图必然是顶层兄弟，长度超限仍应报错。
+fn check_redefine_overlap(leaves : Array[FieldLayout]) -> Unit raise ParseError {
+  for view in leaves {
+    if view.redefine_group == 0 {
+      continue
+    }
+    let vs = view.offset
+    let ve = view.offset + view.total_length
+    for other in leaves {
+      if other.redefine_group == view.redefine_group {
+        continue
+      }
+      let os_ = other.offset
+      let oe = other.offset + other.total_length
+      if vs < oe && os_ < ve {
+        raise InvalidLayout(
+          "REDEFINES view '\{view.path}' (offset \{vs}, length \{view.total_length}) overlaps field '\{other.path}' (offset \{os_}, length \{other.total_length}): a redefining view may only re-describe its target's storage — shorten the view or move the following field (IBM: REDEFINES must not span other items)",
+        )
+      }
+    }
+  }
+}
+
+///|
 /// 累加器：编译过程中的可写状态。
 ///
 /// 用结构体而不是多个局部变量，是因为 REDEFINES 需要"回退游标到目标字段的起点"，
@@ -675,6 +758,10 @@ pub fn compile_layout(
     raise InvalidLayout("empty copybook: no fields")
   }
   let groups = collect_redefine_groups(specs)
+  // REDEFINES 形态校验（CB-B10）：父项约束在编译前就能判（纯结构问题），
+  // 长度/重叠约束要等偏移算完才判。两者都报 InvalidLayout，与既有的
+  // 「REDEFINES target not found」同一错误类，CLI 文案一致。
+  check_redefine_parentage(specs)
   let b = Builder::{ cursor: 0, leaves: [], all: [], by_name: Map([]), }
   let mut record_name = ""
   for spec in specs {
@@ -710,6 +797,9 @@ pub fn compile_layout(
   // 叶子路径必须唯一（CB-20）：重复 path 会让 decode/encode 在数据面上
   // 无法区分两个字段（map 键撞车），是静默丢数据的前置条件。
   check_unique_leaf_paths(sorted_leaves)
+  // REDEFINES 视图不得吞掉其他字段的字节（CB-B10）：需要真实偏移，
+  // 只能在布局算完之后判。放在路径唯一性之后，报错顺序更贴近根因。
+  check_redefine_overlap(sorted_leaves)
   RecordLayout::{
     name: record_name,
     byte_length: b.cursor,
