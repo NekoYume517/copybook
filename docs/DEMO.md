@@ -24,14 +24,14 @@ moon version
 
 ```bash
 moon check     # 类型检查，0 error
-moon test      # 409 个测试，全绿
+moon test      # 480 个测试，全绿
 moon build --target wasm
 ```
 
 预期输出（`moon test`）：
 
 ```
-Total tests: 409, passed: 409, failed: 0.
+Total tests: 480, passed: 480, failed: 0.
 ```
 
 ## 二、看字节布局（这是项目最有说服力的输出）
