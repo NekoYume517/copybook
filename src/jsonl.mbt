@@ -55,6 +55,23 @@ pub fn parse_jsonl_row(
                         Err(
                           "__nibbles['\{k}'].\{key} must be an integer in 0..=15, got \{shown}",
                         )
+                      } else if key == "sign" &&
+                        v.to_int64() != 12L &&
+                        v.to_int64() != 13L &&
+                        v.to_int64() != 15L {
+                        // **sign 只认 C/D/F**（CB-A3，2026-11-10 审计）：
+                        // decode 的 zoned/packed 侧只接受 0xC/0xF 正号、
+                        // 0xD 负号（其余区号本来就是 InvalidNumeric），
+                        // 所以 sign=10/11/14 是 decode 永远写不出来的值——
+                        // 静默收下会落进 encode 默认分支丢掉符号
+                        // （sign 12 → 写出 F 区号，exit 0）。
+                        let shown = match repr {
+                          Some(r) => r
+                          None => v.to_string()
+                        }
+                        Err(
+                          "__nibbles['\{k}'].sign must be one of 12 (C, positive), 13 (D, negative), 15 (F, unsigned), got \{shown}",
+                        )
                       } else {
                         Ok(Some(v.to_int()))
                       }
@@ -325,7 +342,27 @@ pub fn parse_jsonl_row(
           None => nibbles.get(field.name)
         }
         match nib {
-          Some((sn, pn)) =>
+          Some((sn, pn)) => {
+            // **pad 只在 COMP-3 有意义**（CB-A3，2026-11-10 审计）：非零
+            // pad 是 packed 尾字节的高半字节，zoned 等其他用法根本没有
+            // 这个位置——decode 从不为它们写 pad，非零 pad 只可能是损坏，
+            // 静默忽略会让损坏的 JSONL 悄悄编出「看起来正常」的字节。
+            // pad=0 是恒等值，任何用法都无害。
+            match pn {
+              Some(p) =>
+                if p != 0 {
+                  let is_comp3 = match field.pic.usage {
+                    Comp3 => true
+                    _ => false
+                  }
+                  if !is_comp3 {
+                    return Err(
+                      "__nibbles['\{field.path}'].pad applies only to COMP-3 fields, got \{p}",
+                    )
+                  }
+                }
+              None => ()
+            }
             match out.get(field.path) {
               Some(Text(s)) =>
                 match parse_decimal_with_scale(s, field.pic) {
@@ -368,6 +405,7 @@ pub fn parse_jsonl_row(
                 }
               _ => ()
             }
+          }
           None => ()
         }
       }
