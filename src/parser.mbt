@@ -175,6 +175,20 @@ priv struct RawEntry {
   occurs_depending_on : String?
   value_literal : String?
   group_usage : Usage?
+  /// 组项上写的 SIGN 子句，`(leading, separate)`，供子项继承（CB-B6）。
+  ///
+  /// COBOL 规定组级 SIGN 作用于组内**全部带符号数值项**。解析期逐项互相
+  /// 看不见，而 FieldSpec 是不可变值、构造后改不了，所以继承与 USAGE 走
+  /// 同一条路：在 `build_children` **构造** FieldSpec 时自上而下传进去。
+  ///
+  /// 刻意**不**挂到公开的 `FieldSpec` 上：布局与数据面都不需要它（生效
+  /// 结果是叶子 pic 上的 `sign_leading` / `sign_separate`），加公开字段会
+  /// 迫使 7 处测试构造点跟着改，收益为零。
+  group_sign : (Bool, Bool)?
+  /// 本项**自己写了** SIGN 子句（CB-B6）：叶子显式声明优先于组级继承。
+  /// 独立于 `group_sign`：后者只对组项（无 PIC）有意义，而叶子既要有
+  /// 自己的 `sign_leading` 值，又要能被判断"是否该继承"。
+  sign_declared : Bool
   // 本项**显式**声明的 USAGE（USAGE 子句或裸 COMP 族）。
   // 与 pic.usage 的区别：PIC 子句默认自带 Display，无法区分「写了
   // DISPLAY」与「默认 Display」——COBOL 标准规定子项显式声明优先于
@@ -430,6 +444,8 @@ fn parse_program(p : ParserState) -> Array[FieldSpec] raise ParseError {
       occurs_depending_on: entry.occurs_depending_on,
       value_literal: entry.value_literal,
       group_usage: entry.group_usage,
+      group_sign: entry.group_sign,
+      sign_declared: entry.sign_declared,
       explicit_usage: entry.explicit_usage,
       is_synced: entry.is_synced,
     })
@@ -442,7 +458,7 @@ fn parse_program(p : ParserState) -> Array[FieldSpec] raise ParseError {
   // FieldSpec 时完成，自上而下把 inherited usage 传进去。
   // 优先级：自身显式声明 > 上层继承；无法区分「显式 USAGE DISPLAY」与
   // 「默认 DISPLAY」时按 IBM 编译器的行为，组声明优先。
-  let (roots, _) = build_children(flat, 0, 0, None)
+  let (roots, _) = build_children(flat, 0, 0, None, None)
   roots
 }
 
@@ -457,9 +473,19 @@ fn parse_program(p : ParserState) -> Array[FieldSpec] raise ParseError {
 /// 而子树结束后遇到的下一个项的层级号一定 `<= 子树根层级`。
 
 ///|
+/// 是否数值类别（`PicCategory` 未实现 Eq，用模式匹配）。
+///
+/// CB-B6 的组级 SIGN 只作用于数值项：字符类与编辑型不吃 SIGN 子句。
+fn is_numeric_category(c : PicCategory) -> Bool {
+  match c {
+    Numeric => true
+    _ => false
+  }
+}
+
+///|
 /// Usage 的结构相等比较（enum 无参数变体；类型未实现 Eq trait）。
-fn usage_same(a : Usage, b : Usage) -> Bool {
-  match (a, b) {
+fn usage_same(a : Usage, b : Usage) -> Bool {  match (a, b) {
     (Display, Display) => true
     (Comp, Comp) => true
     (Comp3, Comp3) => true
@@ -475,6 +501,7 @@ fn build_children(
   start : Int32,
   parent_level : Int32,
   inherited_usage : Usage?,
+  inherited_sign : (Bool, Bool)?,
 ) -> (Array[FieldSpec], Int32) raise ParseError {
   let out : Array[FieldSpec] = []
   let mut i = start
@@ -493,7 +520,16 @@ fn build_children(
       Some(u) => Some(u)
       None => inherited_usage
     }
-    let (kids, next_i) = build_children(flat, i, e.level, down)
+    // 组级 SIGN 继承（CB-B6，2026-11-10 审计）：COBOL 规定组项上的 SIGN
+    // 子句作用于组内**全部**带符号数值项。旧实现只把 SIGN 合并进叶子自己
+    // 的 PIC，组项（pic == None）上那份被原地丢弃 —— 真实 IBM 记录
+    // （`C1 F2 F3` = +123，`05 G SIGN IS LEADING.`）因此解不出，
+    // `SIGN ... SEPARATE` 还会少算那个符号字节、记录长度错位。
+    let down_sign : (Bool, Bool)? = match e.group_sign {
+      Some(s) => Some(s)
+      None => inherited_sign
+    }
+    let (kids, next_i) = build_children(flat, i, e.level, down, down_sign)
     i = next_i
     // 77 是**独立项**（standalone item）：COBOL 规定它只能是顶层项，
     // 不参与层级号建树、不能挂在任何组里（CB-B11，2026-11-10 审计）。
@@ -529,20 +565,45 @@ fn build_children(
     // usage 与自身不同时改写。显式声明过的一律保留 parse_entry_clauses
     // 合并后的结果（那里已把 explicit_usage 覆盖进 pic.usage）。
     let final_pic : PicClause? = match e.pic {
-      Some(pc) =>
-        if e.explicit_usage is Some(_) {
-          Some(pc)
+      Some(pc) => {
+        let base = if e.explicit_usage is Some(_) {
+          pc
         } else {
           match down {
             Some(u) =>
               if usage_same(pc.usage, u) {
-                Some(pc)
+                pc
               } else {
-                Some({ ..pc, usage: u, })
+                { ..pc, usage: u, }
               }
-            None => Some(pc)
+            None => pc
           }
         }
+        // 组级 SIGN 落到基本项（CB-B6）：**叶子自己没写** SIGN、且是带有
+        // 符号的数值项时才继承。三条边界按 IBM 规则：
+        //   1. 叶子显式写了 SIGN → 叶子优先（用 `e.sign_declared` 判，
+        //      **不能**用 `sign_leading == false` —— TRAILING 与「没写」同值，
+        //      否则 `SIGN IS TRAILING` 的叶子会被组里的 LEADING 覆盖）；
+        //   2. 组级 SIGN 不把无符号字段变成有符号 —— PIC 必须自带 `S`；
+        //   3. 只作用于数值项（编辑型的符号由模式串表达，`SIGN SEPARATE`
+        //      在编辑型上已由 CB-B12 在 parse_entry_clauses 里拒绝）。
+        // SEPARATE 的 +1 符号字节由既有叶子级 `sign_separate` 的布局规则
+        // 自然带上（layout.mbt 的 pic_byte_length，只有 Display 数值吃 +1）。
+        match inherited_sign {
+          Some((leading, separate)) =>
+            if !e.sign_declared && base.signed &&
+              is_numeric_category(base.category) {
+              Some({
+                ..base,
+                sign_leading: leading,
+                sign_separate: separate,
+              })
+            } else {
+              Some(base)
+            }
+          None => Some(base)
+        }
+      }
       None => None
     }
     out.push({
@@ -577,6 +638,10 @@ priv struct EntryClauses {
   occurs_depending_on : String?
   value_literal : String?
   group_usage : Usage?
+  /// 组项上写的 SIGN 子句 `(leading, separate)`（CB-B6）：无 PIC 的项上
+  /// 那两个标志原本被原地丢弃，导致组级 SIGN 完全失效。
+  group_sign : (Bool, Bool)?
+  sign_declared : Bool
   explicit_usage : Usage?
   is_synced : Bool
 }
@@ -603,6 +668,9 @@ fn parse_entry_clauses(
   // PIC 子句所在行（CB-B12 的报错定位用）。parse_entry_clauses 没有行号
   // 参数，这里就地记下唯一需要的那个位置。
   let mut pic_line = 0
+  // 本项**自己写了** SIGN 子句（CB-B6）：组级 SIGN 只在叶子未声明时继承。
+  // 必须独立记标志 —— `sign_leading = false`（TRAILING）与「没写」同值。
+  let mut sign_declared = false
 
   while !p.at_eof() && !p.at_dot() {
     let tok = p.peek()
@@ -652,6 +720,11 @@ fn parse_entry_clauses(
     if p.at_keyword("SIGN") {
       let _ = p.advance()
       let _ = p.eat_keyword("IS")
+      // 叶子自己写了 SIGN：这决定组级 SIGN 能否被继承（CB-B6）。
+      // 必须单独记一个标志 —— `sign_leading = false` 与「没写」在值上
+      // 无法区分，靠它判「叶子优先」会让 `SIGN IS TRAILING` 的叶子
+      // 仍被组里的 LEADING 覆盖（实测 F1F2C3 解不出）。
+      sign_declared = true
       if p.eat_keyword("LEADING") {
         sign_leading = true
       } else {
@@ -666,6 +739,7 @@ fn parse_entry_clauses(
     // 单独的 SEPARATE（SIGN IS 被省略的写法）
     if p.at_keyword("SEPARATE") {
       let _ = p.advance()
+      sign_declared = true
       sign_separate = true
       continue
     }
@@ -862,6 +936,18 @@ fn parse_entry_clauses(
       }
   }
 
+  // 组项上的 SIGN 子句单独记下来供子项继承（CB-B6）：无 PIC 的项上
+  // sign_leading / sign_separate 原本被原地丢弃。有 PIC 的项已在上面的
+  // final_pic 里合并，不再作为继承源。
+  let group_sign : (Bool, Bool)? = match pic {
+    Some(_) => None
+    None => if sign_declared {
+      Some((sign_leading, sign_separate))
+    } else {
+      None
+    }
+  }
+
   {
     pic: final_pic,
     redefines,
@@ -870,6 +956,8 @@ fn parse_entry_clauses(
     occurs_depending_on,
     value_literal,
     group_usage,
+    group_sign,
+    sign_declared,
     explicit_usage,
     is_synced,
   }
