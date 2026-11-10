@@ -111,9 +111,7 @@ test "CB-B6: 组级裸 SEPARATE 写法也生效（SIGN IS 省略）" {
   assert_eq(d.coefficient, 123L)
 
   // SIGN IS 省略、只写 SEPARATE 的形态同样按「组级声明」继承
-  let b = gsign_layout(
-    "01 R.\n    05 G SEPARATE.\n        10 A PIC S9(3).\n",
-  )
+  let b = gsign_layout("01 R.\n    05 G SEPARATE.\n        10 A PIC S9(3).\n")
   inspect(b.byte_length, content="4")
   let e = dec_of(b, b"\xF1\xF2\xF3\x4E", "R.G.A")
   assert_eq(e.coefficient, 123L)
