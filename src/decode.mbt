@@ -301,10 +301,34 @@ fn decode_zoned(
   scale : Int32,
   sign_separate : Bool,
   sign_leading : Bool,
+  blank_when_zero : Bool,
 ) -> Result[Decimal, DecodeError] {
   let n = bytes.length()
   if n == 0 {
     return Err(InvalidNumeric(base_offset, "empty zoned decimal field"))
+  }
+  // BLANK WHEN ZERO（CB-B7，2026-11-10 审计）：该字段取值 0 时主机落盘是
+  // **全空格**（0x40），不是 `F0 F0 F0`。不认这一形态，一条完全合法的
+  // IBM 记录会被拒，而报错内容（"zoned zone nibble is 0x4, expected F"）
+  // 与 copybook 的声明直接矛盾（copybook 说「零就是空格」）。
+  //
+  // 判定放在数字解析之前：0x40 的低半字节是 0、高半字节 4 既非 F 区也非
+  // 符号位，在正常 zoned 里本就非法 —— 全 0x40 只可能是 BWZ 的零。
+  // 只对 Display 数值生效：调用方（decode_field 的 Numeric/Display 分支）
+  // 已保证这一点，COMP / COMP-3 / COMP-1/2 不走这里（IBM 上 BWZ 对它们
+  // 是 no-op）。
+  if blank_when_zero {
+    let mut all_blank = true
+    for i = 0; i < n; i = i + 1 {
+      if bytes[i].to_int() != 0x40 {
+        all_blank = false
+        break
+      }
+    }
+    if all_blank {
+      // 正零。sign_nibble 留 None：encode 侧对 BWZ 字段会重新写成全空格。
+      return Ok(decimal_with_nibbles(0L, scale, false, None, None))
+    }
   }
   // 独立符号字节：LEADING 在开头，TRAILING 在结尾。
   // LEADING 时数字是 [1..n)——首字节是符号，其余全是数字。曾经写成
@@ -835,6 +859,7 @@ fn decode_field(
             pic.scale,
             pic.sign_separate,
             pic.sign_leading,
+            pic.blank_when_zero,
           )
           match r {
             Ok(d) =>

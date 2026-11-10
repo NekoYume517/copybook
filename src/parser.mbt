@@ -131,6 +131,17 @@ pub(all) struct PicClause {
   /// 只对字符类（X / A）有意义：数值与编辑型的 JUSTIFIED 在 COBOL 里
   /// 不产生对齐效果，编码路径按原样处理（见 encode_text 的调用方）。
   justified_right : Bool
+  /// 声明了 `BLANK WHEN ZERO`（CB-B7，2026-11-10 审计）。
+  ///
+  /// IBM 语义：该 DISPLAY 数值项取值**为 0 时落盘是全空格**（`40 40 40`）。
+  /// 旧实现把子句整段吃掉，于是 `_probe/p03_bz.dat`（3 个 0x40）这条完全
+  /// 合法的记录被拒，报 "zoned zone nibble is 0x4, expected F" —— 错误内容
+  /// 还与 copybook 的声明直接矛盾（copybook 说「零就是空格」）。
+  ///
+  /// 生效范围：只对 `usage == Display` 的数值项。COMP / COMP-3 / COMP-1 /
+  /// COMP-2 上的 BWZ 按 IBM 规范是 no-op（既不报错也不改行为）——
+  /// 二进制与打包格式的零有确定字节形态，没有「空格」概念。
+  blank_when_zero : Bool
   pic_text : String // PIC 模式串原文（大写），供布局层兜底
 }
 
@@ -682,6 +693,8 @@ fn parse_entry_clauses(
   let mut sign_declared = false
   // 声明了 JUSTIFIED RIGHT（CB-B5）：编码时右对齐、左侧补 0x40。
   let mut is_justified_right = false
+  // 声明了 BLANK WHEN ZERO（CB-B7）：DISPLAY 数值为 0 时落盘为全空格。
+  let mut is_blank_when_zero = false
 
   while !p.at_eof() && !p.at_dot() {
     let tok = p.peek()
@@ -854,7 +867,13 @@ fn parse_entry_clauses(
     if p.at_keyword("BLANK") {
       let _ = p.advance()
       let _ = p.eat_keyword("WHEN")
-      let _ = p.eat_keyword("ZERO")
+      // ZERO / ZEROS / ZEROES 三种拼写都是同一子句
+      let _ = p.eat_keyword("ZEROS") ||
+        p.eat_keyword("ZEROES") ||
+        p.eat_keyword("ZERO")
+      // 记录标志（CB-B7）：旧实现整段吃掉，于是「零落盘为全空格」的语义
+      // 完全失效 —— 合法 IBM 记录被拒（详见 PicClause.blank_when_zero）。
+      is_blank_when_zero = true
       continue
     }
 
@@ -922,6 +941,7 @@ fn parse_entry_clauses(
         // 右对齐标志（CB-B5）：只对字符类生效，其余类别按原样透传、
         // 由编码路径忽略（数值 / 编辑型的 JUSTIFIED 在 COBOL 里无效果）。
         justified_right: is_justified_right,
+        blank_when_zero: is_blank_when_zero,
         pic_text: pc.pic_text,
       })
     }
@@ -941,6 +961,7 @@ fn parse_entry_clauses(
             sign_separate: false,
             sign_leading: false,
             justified_right: false,
+            blank_when_zero: false,
             pic_text: match explicit_usage {
               Some(Comp1) => "COMP-1"
               _ => "COMP-2"
@@ -1302,6 +1323,7 @@ pub fn parse_pic_clause(
       sign_separate: false,
       sign_leading: false,
       justified_right: false,
+      blank_when_zero: false,
       pic_text: text,
     }
   }
@@ -1398,6 +1420,7 @@ pub fn parse_pic_clause(
     sign_separate: false,
     sign_leading: false,
     justified_right: false,
+    blank_when_zero: false,
     pic_text: text,
   }
 }
@@ -1482,6 +1505,7 @@ fn parse_edited(
     sign_separate: false,
     sign_leading: false,
     justified_right: false,
+    blank_when_zero: false,
     pic_text: text,
   }
 }

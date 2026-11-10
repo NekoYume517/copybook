@@ -113,6 +113,19 @@ fn encode_zoned(
   d : Decimal,
 ) -> Result[Unit, DecodeError] {
   let width = field_storage_digits(pic)
+  // BLANK WHEN ZERO（CB-B7，2026-11-10 审计）：该字段取值为 0 时主机写的是
+  // **全空格**（0x40），不是 `F0 F0 F0`。这一半必须与 decode 侧对称，否则
+  // `decode(40 40 40) → 0 → encode` 会写出 `F0 F0 F0`，字节不再一致 ——
+  // 只修 decode 等于把「合法记录被拒」换成「往返静默改字节」，是更差的形态。
+  //
+  // 判定取「系数为 0 且非负」：-0 在 BWZ 字段上没有独立落盘形态
+  // （空格没有符号位），按零处理。
+  if pic.blank_when_zero && d.coefficient == 0L && !d.negative {
+    for i = 0; i < width; i = i + 1 {
+      w.set(offset + i, 0x40)
+    }
+    return Ok(())
+  }
   let digits = decimal_digits(d)
   let padded = match pad_digits(digits, width) {
     Some(s) => s
