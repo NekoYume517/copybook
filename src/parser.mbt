@@ -600,6 +600,9 @@ fn parse_entry_clauses(
   let mut sign_leading = false
   // 是否声明了 SYNC / SYNCHRONIZED（NEW-4：本子集不解对齐，只记录以便警告）
   let mut is_synced = false
+  // PIC 子句所在行（CB-B12 的报错定位用）。parse_entry_clauses 没有行号
+  // 参数，这里就地记下唯一需要的那个位置。
+  let mut pic_line = 0
 
   while !p.at_eof() && !p.at_dot() {
     let tok = p.peek()
@@ -619,6 +622,7 @@ fn parse_entry_clauses(
           )
       }
       pic = Some(parse_pic_clause(text, text_tok.line, text_tok.column))
+      pic_line = text_tok.line
       continue
     }
 
@@ -785,6 +789,28 @@ fn parse_entry_clauses(
   // COMP-1/2 usage）保持原样当组项处理。
   let final_pic = match pic {
     Some(pc) => {
+      // 编辑型（numeric-edited）不允许 SIGN SEPARATE（CB-B12，2026-11-10
+      // 审计）。IBM 的编辑型 PIC 自带符号位置：`+` `-` 浮动插入字符、
+      // `CR` / `DB` 后缀、`S` 前缀都在**模式串内部**表达符号，独立符号
+      // 字节没有归属。旧实现照收声明、照旧不写那个字节：copybook 说 7
+      // 字节、实际写 6 字节，与真实 IBM 布局不一致，而 verify 两侧用同一份
+      // 错布局仍报 byte-identical —— 静默修正的典型形态。
+      //
+      // 只拒绝 SEPARATE：`SIGN IS LEADING` / `TRAILING`（非独立）对编辑型
+      // 不产生额外字节，本实现按模式串语义处理，不算静默丢弃。
+      //
+      // `PicCategory` 没有实现 Eq（见 CONTRACT-FIX.md），用模式匹配判定。
+      match pc.category {
+        Edited =>
+          if sign_separate {
+            raise SyntaxError(
+              pic_line,
+              1,
+              "编辑型 PIC '\{pc.pic_text}' 不允许 SIGN ... SEPARATE：edited item 的符号位置由模式串自身表达（+ / - / CR / DB / S），不能再叠加独立的符号字节（IBM 规则）",
+            )
+          }
+        _ => ()
+      }
       let u = match explicit_usage {
         Some(u) => u
         None => pc.usage
