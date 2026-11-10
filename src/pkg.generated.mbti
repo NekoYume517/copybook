@@ -93,6 +93,7 @@ pub(all) suberror DecodeError {
   InvalidEbcdic(Int32, Int32)
   FieldOutOfBounds(String, Int32, Int32)
   EncodeFailed(String)
+  InvalidBypass(String)
 }
 pub fn DecodeError::to_display(Self) -> String
 
