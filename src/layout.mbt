@@ -143,13 +143,16 @@ fn pic_byte_length(pic : PicClause) -> Int32 raise ParseError {
           )
       }
     }
-    // 编辑型 PIC（ZZ,ZZ9.99 / $9,999.99 / 9(5)CR）的存储宽度 = **模式串展开后的
-    // 显示字符数**（含 $ , . CR/DB + - 这些插入字符）。
+    // 编辑型 PIC（ZZ,ZZ9.99 / $9,999.99 / 9(5)CR）的存储宽度 = **模式串里
+    // 真正占字符位置的符号数**：插入字符（$ , . CR/DB + - / B 0）各占一位，
+    // 但 `V` / `P` / `S` 按 IBM 规则**不占**（2026-11-11 审计：旧实现用
+    // `pic_storage_len` 直接数字符，`PIC ZZ9V99` 被算成 6 而不是 5、
+    // `PIC ZZ9PP` 被算成 5 而不是 3，其后的字段全部错位）。
     //
-    // 不能用 `digits + scale`：`ZZ,ZZ9.99` 的 digits=5 scale=2 → 7，但实际显示
-    // 宽度是 9（多了逗号和小数点两个插入字符）。parser 的 `pic_storage_len`
-    // 正是为此提供：把 `(n)` 展开后数长度。
-    Edited => pic_storage_len(pic.pic_text)
+    // 不能用 `digits + scale`：`ZZ,ZZ9.99` 的 digits=5 scale=2 → 7，但实际
+    // 宽度是 9（多了逗号和小数点）。`edited_storage_len` 把「展开后字符数」
+    // 减去 V/P/S，正是两部分之和。
+    Edited => edited_storage_len(pic.pic_text)
     Numeric =>
       match pic.usage {
         Display => {

@@ -1638,3 +1638,27 @@ pub fn pic_storage_len(text : String) -> Int32 {
   let chars = expand_pic(text, 0, 0) catch { _ => text.to_array() }
   chars.length()
 }
+
+///|
+/// numeric-edited（`Edited`）的**实际存储字节数**：展开后去掉不占字符位置的
+/// 符号 `V` / `P` / `S`。
+///
+/// IBM Enterprise COBOL「Symbols used in the PICTURE clause」：
+///   - `V`（隐含小数点）: Not counted in the size of the elementary item.
+///   - `P`（缩放位）:     Not counted in the size of the data item.
+///   - `S`（符号指示）:   Not counted ... unless SIGN SEPARATE.
+///
+/// 不能用 `pic_storage_len`（它回答的是"模式串展开后有几个字符"，数字型的
+/// 测试也依赖这个语义）：`PIC ZZ9V99` 的字符数是 6，但存储里只有
+/// `Z Z 9 9 9` 五个位置。多算一位会让**它后面的每个字段整体错位**。
+fn edited_storage_len(text : String) -> Int32 {
+  let chars = expand_pic(text, 0, 0) catch { _ => text.to_array() }
+  let mut n = 0
+  for c in chars {
+    match c {
+      'V' | 'P' | 'S' => ()
+      _ => n = n + 1
+    }
+  }
+  n
+}
