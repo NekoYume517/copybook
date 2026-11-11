@@ -238,34 +238,50 @@ pub fn parse_jsonl_row(
             // "NaN"/"±Infinity" 字符串解回的特殊值 —— 渲染回它的文本形式，
             // 让下面的非有限值分支能识别（否则 NaN 会被 parse_double 的
             // catch 兜底成 0.0，误判成「编辑成 0」而丢旁路）。
-            let text = match out.get(field.path) {
-              Some(Text(s)) => s
+            //
+            // **None 与「空文本」必须分开**（2026-11-12 审计）：只有这一行
+            // 真的给出了字段值才算「有值」。旧实现用 `_ => ""` 把「没有这个
+            // 键」和「值是一串解析不出数字的文本」合并成同一个空串，再被
+            // parse_double 的 catch 兜成 0.0，于是
+            // `{"__float_hex":{"R.D":"4180000000000001"}}` 被判成「用户把值
+            // 编辑成了 0」，旁路当陈旧快照丢弃，encode 写出整片 0x00 ——
+            // 声明的字节事实被静默换成 0.0，退出码 0、零提示。
+            let value_text : String? = match out.get(field.path) {
+              Some(Text(s)) => Some(s)
               Some(Float(f)) =>
-                if f.is_nan() {
-                  "NaN"
-                } else if f == 1.0 / 0.0 {
-                  "Infinity"
-                } else if f == -1.0 / 0.0 {
-                  "-Infinity"
-                } else {
-                  format_json_number(f)
-                }
-              _ => ""
+                Some(
+                  if f.is_nan() {
+                    "NaN"
+                  } else if f == 1.0 / 0.0 {
+                    "Infinity"
+                  } else if f == -1.0 / 0.0 {
+                    "-Infinity"
+                  } else {
+                    format_json_number(f)
+                  },
+                )
+              // None 与 Null 同义：这一行没有给该字段任何值（Null 是 decode
+              // 对「视图解不出」的表示，浮点字段的旁路只在解出时才写出）。
+              _ => None
             }
             // 非有限值先于 parse_double：`parse_double("NaN")` 抛异常，catch
             // 兜底给 0.0 会让 NaN 误判成「编辑成 0」而丢掉整条旁路。
-            let f : Double = if text == "NaN" {
-              0.0 / 0.0
-            } else if text == "Infinity" {
-              1.0 / 0.0
-            } else if text == "-Infinity" {
-              -1.0 / 0.0
-            } else {
-              try @string.parse_double(text) catch {
-                _ => 0.0
-              } noraise {
-                x => x
-              }
+            let f : Double = match value_text {
+              None => 0.0
+              Some(text) =>
+                if text == "NaN" {
+                  0.0 / 0.0
+                } else if text == "Infinity" {
+                  1.0 / 0.0
+                } else if text == "-Infinity" {
+                  -1.0 / 0.0
+                } else {
+                  try @string.parse_double(text) catch {
+                    _ => 0.0
+                  } noraise {
+                    x => x
+                  }
+                }
             }
             // **值感知**（RJ-3b，2026-11-06 组委会验收意见）：
             // `__float_hex` 只在它与字段值**一致**时才生效 —— 即原始字节
@@ -277,11 +293,8 @@ pub fn parse_jsonl_row(
             //
             // 一致性判定不能比 double 相等：8.0+ulp 的原始字节解出的 f 就是
             // 文本 "8" 的 double（文本本来就是这个近似值），比 double 会把
-            // 真 CB-21 场景误判成"一致"从而失效。改比**字节**：把当前文本
-            // 的 double 按**本字段格式**编码出字节，与旁路字节比对 ——
-            // 相同即"文本描述的就是这些字节"，旁路是冗余确认；不同即
-            // "用户改了值"，旁路过时，按值编码。
-            let mut consistent = false
+            // 真 CB-21 场景误判成"一致"从而失效。
+            //
             // **一致性判据**（RJ-3b）：旁路字节 reinterpret 回来的 double，
             // 与字段文本解析出的 double，是否描述同一个数值。
             //
@@ -317,12 +330,18 @@ pub fn parse_jsonl_row(
             } else {
               Float::reinterpret_from_int(raw.to_int()).to_double()
             }
-            let both_nan = f.is_nan() && byte_value.is_nan()
-            let equal_values = f == byte_value ||
-              (f.is_nan() && byte_value.is_nan())
-            // ±Inf 的文本与字节都是 Inf，走 equal_values 自然成立。
-            consistent = both_nan || equal_values
-            if consistent {
+            // ±Inf 的文本与字节都是 Inf，走 equal_values 自然成立；
+            // NaN 的 payload 与符号位文本表示不了，`both_nan` 视作一致。
+            //
+            // **没有值就没有竞争的编辑**（2026-11-12 审计）：旁路键是字节层的
+            // 真值，行里既然没给数值，就按声明的字节原样写回 —— 与
+            // `__tail_hex` / `__filler_hex` 无条件还原同一规则。有值时才走
+            // 「值一致保留旁路、值被编辑则编辑生效」的判定。
+            let consistent = (f.is_nan() && byte_value.is_nan()) ||
+              f == byte_value
+            if value_text is None {
+              out[field.path] = FloatRaw(byte_value, bs)
+            } else if consistent {
               out[field.path] = FloatRaw(f, bs)
             } else {
               // 编辑后的值：丢弃过时旁路，按文本数值走普通 Float 编码。
