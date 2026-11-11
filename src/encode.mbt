@@ -1049,6 +1049,44 @@ fn filler_gaps(
 }
 
 ///|
+/// 某个绝对偏移是否落在某个空洞区间内。
+fn gap_has(gaps : Array[(Int32, Int32)], pos : Int32) -> Bool {
+  for (s, e) in gaps {
+    if pos >= s && pos < e {
+      return true
+    }
+  }
+  false
+}
+
+///|
+/// 把「全视图不写」时的超集空洞快照按**绝对位置**回填，只写那些在当前
+/// 空洞集里仍然存在的字节。
+///
+/// 这是编辑 REDEFINES 视图时的兼容路径：decode 写出的 `__tail_hex` /
+/// `__filler_hex` 是当时空洞的字节序列；用户把某个视图从 Null 改成有值后，
+/// 空洞收缩，快照里对应位置的字节应当被丢弃（编辑优先），而不是让整条
+/// 记录失败。长度必须等于超集空洞总数（由调用方校验），否则仍按损坏报错。
+fn restore_from_superset(
+  w : Writer,
+  sup_gaps : Array[(Int32, Int32)],
+  cur_gaps : Array[(Int32, Int32)],
+  bs : Bytes,
+) -> Unit {
+  let mut idx = 0
+  for (s, e) in sup_gaps {
+    let mut p = s
+    while p < e {
+      if gap_has(cur_gaps, p) {
+        w.set(p, bs[idx].to_int())
+      }
+      idx = idx + 1
+      p = p + 1
+    }
+  }
+}
+
+///|
 /// 编码一条记录。
 ///
 /// 缺失的字段按 `Null` 处理：
@@ -1169,14 +1207,22 @@ pub fn encode_record(
         Some(Bytes(bs)) => {
           let gaps = primary_tail_gaps(layout, Some(values))
           let need = gap_total(gaps)
-          if bs.length() != need {
-            return Err(
-              InvalidBypass(
-                "__tail_hex must be exactly \{need} byte(s) for this record's tail gap(s), got \{bs.length()}",
-              ),
-            )
+          if bs.length() == need {
+            restore(gaps, bs, false)
+          } else {
+            // 编辑视图导致空洞收缩时，快照的长度对应「全视图不写」的超集。
+            // 只回填当前仍是空洞的位置（编辑优先）；其它长度按 CB-A2 报错。
+            let sup = primary_tail_gaps(layout, None)
+            if bs.length() == gap_total(sup) {
+              restore_from_superset(w, sup, gaps, bs)
+            } else {
+              return Err(
+                InvalidBypass(
+                  "__tail_hex must be exactly \{need} byte(s) for this record's tail gap(s), got \{bs.length()}",
+                ),
+              )
+            }
           }
-          restore(gaps, bs, false)
         }
         _ => ()
       }
@@ -1184,14 +1230,20 @@ pub fn encode_record(
         Some(Bytes(bs)) => {
           let gaps = filler_gaps(layout, Some(values))
           let need = gap_total(gaps)
-          if bs.length() != need {
-            return Err(
-              InvalidBypass(
-                "__filler_hex must be exactly \{need} byte(s) for this record's FILLER gap(s), got \{bs.length()}",
-              ),
-            )
+          if bs.length() == need {
+            restore(gaps, bs, false)
+          } else {
+            let sup = filler_gaps(layout, None)
+            if bs.length() == gap_total(sup) {
+              restore_from_superset(w, sup, gaps, bs)
+            } else {
+              return Err(
+                InvalidBypass(
+                  "__filler_hex must be exactly \{need} byte(s) for this record's FILLER gap(s), got \{bs.length()}",
+                ),
+              )
+            }
           }
-          restore(gaps, bs, false)
         }
         _ => ()
       }
