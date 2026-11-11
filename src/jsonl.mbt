@@ -460,6 +460,25 @@ pub fn parse_jsonl_row(
                   }
                   None => ()
                 }
+              // **没有值 = 没有竞争的编辑**（2026-11-12 审计）：与
+              // `__float_hex` / `__tail_hex` / `__filler_hex` 统一，旁路键
+              // 就是字节真值。旧实现在这里 `_ => ()` 走掉，于是
+              // `{"__nibbles":{"R.N":{"sign":13}}}`（行里没给 R.N 的值）
+              // 声明的 0xD 被静默丢弃，encode 写出 `F0 F0 F0` / `00 0C`
+              // —— 负号变成正号，exit 0、零提示。
+              //
+              // 系数按「未赋值存储 = 0」取零，符号与填充半字节按声明写回
+              // （`PIC S9(3)` 的负零 = `F0 F0 D0`，COMP-3 的负零 = `00 0D`）。
+              // 只处理 None/Null：其它非文本单元格（Int/Decimal/…）保持
+              // 既有行为不动 —— 那才可能带着用户的编辑。
+              Some(Null) | None =>
+                out[field.path] = Decimal(Decimal::{
+                  coefficient: 0L,
+                  scale: field.pic.scale,
+                  negative: sn == Some(0xD),
+                  sign_nibble: sn,
+                  pad_nibble: pn,
+                })
               _ => ()
             }
           }
