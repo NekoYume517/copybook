@@ -1335,6 +1335,15 @@ pub fn parse_pic_clause(
   let mut after_point = false
   let mut trailing_p = 0
   let mut leading_p = 0
+  // P 的位置校验（2026-11-11 审计）：IBM 要求 P 是**连续的一段**，且只能
+  // 占据数字位的最左或最右端。旧实现只按「P 出现在第一个 9 之前/之后」
+  // 折算 leading/trailing，于是 `9(3)PPV99`（P 夹在整数与小数位之间）
+  // 被当成尾随 P，scale 取 -2，值域静默变成 ×100。
+  let mut first_p = -1
+  let mut last_p = -1
+  let mut p_count = 0
+  let mut first_digit = -1
+  let mut last_digit = -1
 
   for i, c in chars {
     match c {
@@ -1349,13 +1358,29 @@ pub fn parse_pic_clause(
         signed = true
       }
       'V' => after_point = true
-      '9' =>
+      '9' => {
+        if first_digit < 0 {
+          first_digit = i
+        }
+        last_digit = i
         if after_point {
           frac_digits = frac_digits + 1
         } else {
           int_digits = int_digits + 1
         }
-      'P' =>
+      }
+      'P' => {
+        if p_count == 0 {
+          first_p = i
+        } else if i != last_p + 1 {
+          raise SyntaxError(
+            line,
+            column,
+            "PIC '\{text}' 的缩放位 P 必须是连续的一段（IBM：P 只能出现在数字位的最左或最右端）",
+          )
+        }
+        last_p = i
+        p_count = p_count + 1
         // P 只能出现在两端：第一个 9 之前是前导缩放位，其后是尾随缩放位。
         // 注意 `VPP9` 这类写法：V 之后、9 之前仍是前导（小数点在最左），
         // 所以判定依据是「是否已出现数字位」，不是 after_point。
@@ -1364,12 +1389,27 @@ pub fn parse_pic_clause(
         } else {
           trailing_p = trailing_p + 1
         }
+      }
       other =>
         raise SyntaxError(
           line,
           column,
           "PIC '\{text}' 里出现非法字符 '\{other}'",
         )
+    }
+  }
+
+  // P 不能夹在数字位之间（`9PP9` / `9(3)PPV99`）：两端都还有真实数字位
+  // 时，P 既不是前导也不是尾随，COBOL 没有这种写法。
+  if p_count > 0 {
+    let digits_before = first_digit >= 0 && first_digit < first_p
+    let digits_after = last_digit >= 0 && last_digit > last_p
+    if digits_before && digits_after {
+      raise SyntaxError(
+        line,
+        column,
+        "PIC '\{text}' 的缩放位 P 不能夹在数字位之间（IBM：P 只能出现在数字位的最左或最右端）",
+      )
     }
   }
 
