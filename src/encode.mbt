@@ -118,12 +118,25 @@ fn encode_zoned(
   // `decode(40 40 40) → 0 → encode` 会写出 `F0 F0 F0`，字节不再一致 ——
   // 只修 decode 等于把「合法记录被拒」换成「往返静默改字节」，是更差的形态。
   //
-  // 判定取「系数为 0 且非负」：-0 在 BWZ 字段上没有独立落盘形态
-  // （空格没有符号位），按零处理。
-  if pic.blank_when_zero && d.coefficient == 0L && !d.negative {
+  // **只对「没有原始符号半字节」的零写成空格**（2026-11-11 审计）：
+  // decode 接受非空格写法的零（`F0 F0 F0` / `F0 F0 C0` / `F0 F0 F0 4E`），
+  // 这些记录带 `sign_nibble`（全空格零不带）。若只看系数为 0 就写空格，
+  // `decode → encode` 会把它们静默改写成 `40 40 40` —— 与 CB-2 负零、
+  // RJ-1 非规范 HFP 零同族的 L1 违约。新建的零（`Decimal::from_parts`，
+  // sign_nibble=None）仍按 BWZ 默认写全空格。
+  let has_original_zero_form = match d.sign_nibble {
+    None => false
+    Some(_) => true
+  }
+  if pic.blank_when_zero &&
+    d.coefficient == 0L &&
+    !d.negative &&
+    !has_original_zero_form {
     for i = 0; i < width; i = i + 1 {
       w.set(offset + i, 0x40)
     }
+    // SIGN SEPARATE 的字段长度是 width + 1：全空格形态连符号字节也是 0x40。
+    // Writer 初值就是 0x40，这里无需额外写；保留注释说明对称性。
     return Ok(())
   }
   let digits = decimal_digits(d)

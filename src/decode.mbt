@@ -317,8 +317,14 @@ fn decode_zoned(
   // 只对 Display 数值生效：调用方（decode_field 的 Numeric/Display 分支）
   // 已保证这一点，COMP / COMP-3 / COMP-1/2 不走这里（IBM 上 BWZ 对它们
   // 是 no-op）。
+  //
+  // **`all_blank` 要留到函数末尾**（2026-11-11 审计）：非空格写法的零
+  // （`F0 F0 F0` / `F0 F0 C0` / `F0 F0 F0 4E`）decode 也接受；encode 若
+  // 只看「系数为 0」就写全空格，这些记录会被静默改字节（L1 违约，且
+  // verify 报 mismatch 而 JSONL 路径无声）。`all_blank` 用来区分
+  // 「真的是全空格零」与「只是数值为 0」。
+  let mut all_blank = blank_when_zero
   if blank_when_zero {
-    let mut all_blank = true
     for i = 0; i < n; i = i + 1 {
       if bytes[i].to_int() != 0x40 {
         all_blank = false
@@ -326,7 +332,7 @@ fn decode_zoned(
       }
     }
     if all_blank {
-      // 正零。sign_nibble 留 None：encode 侧对 BWZ 字段会重新写成全空格。
+      // 正零。sign_nibble 留 None：encode 侧据此写回全空格。
       return Ok(decimal_with_nibbles(0L, scale, false, None, None))
     }
   }
@@ -430,6 +436,13 @@ fn decode_zoned(
         "unsigned zoned decimal has negative sign (byte 0x\{hex2(digit_bytes[dn - 1].to_int())})",
       ),
     )
+  }
+  // SIGN SEPARATE 的零：独立符号字节不含符号半字节，`sign_nib` 恒 None。
+  // 非空格写法（`F0 F0 F0 4E`）必须与全空格零区分，否则 encode 会把它
+  // 改写成全空格。用 F 作标记（"数字区确实写出来了"）；只在正零上设，
+  // 负零本来就因 `!negative` 不进入 BWZ 的空格分支。
+  if blank_when_zero && sign_separate && coef == 0L && !negative {
+    sign_nib = Some(0xF)
   }
   Ok(decimal_with_nibbles(coef, scale, negative, sign_nib, None))
 }
@@ -870,7 +883,13 @@ fn decode_field(
               // F1 F2 F3 ≠ 原始 F1 F2 C3。保留 Decimal 让 nibble 走
               // __nibbles 旁路；标准 F 区号（未符号化）仍走 Int，普通数据
               // 的 JSONL 形态不变。
-              if pic.scale == 0 && !pic.signed && d.sign_nibble != Some(0xC) {
+              if pic.scale == 0 &&
+                !pic.signed &&
+                d.sign_nibble != Some(0xC) &&
+                // BWZ 的数值 0 必须保留 Decimal：全空格零（sign=None）与
+                // 非空格零（sign=F/C）要被 encode 区分，collapse 成 Int
+                // 会丢掉字节身份（2026-11-11 审计）。
+                !(pic.blank_when_zero && d.coefficient == 0L) {
                 Ok(Int(d.coefficient))
               } else {
                 Ok(Decimal(d))
