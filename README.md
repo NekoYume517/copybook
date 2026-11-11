@@ -174,6 +174,7 @@ copybook decode --copybook app.cpy --data app.dat --float-mode ieee
 | `PIC X(n)` / `A(n)` 字符 | ✅ |
 | `PIC N(n)` 国家字符 | ✅ UTF-16BE；**n 是 UTF-16 码元数**（不是字符数），空位补 U+0020 |
 | `PIC S9(n)V9(m)` 隐含小数 | ✅ |
+| 编辑型 PIC（`ZZ9.99` / `$9,999.99` / `9(5)CR`） | ✅ DISPLAY 文本往返；宽度 = 字符位置数（**V / P / S 不占存储**，插入字符 `$ , . + - / B 0 CR DB *` 各占一位） |
 | `COMP` / `COMP-4` 二进制 | ✅ |
 | `COMP-3` 打包十进制 | ✅ |
 | `COMP-1` / `COMP-2` 浮点 | ✅ 默认 IBM HFP；`--float-mode ieee` 切 IEEE 754 |
@@ -188,6 +189,14 @@ copybook decode --copybook app.cpy --data app.dat --float-mode ieee
 | 组级 `USAGE` | ✅ 子项继承 |
 | 组级 `SIGN`（`LEADING` / `SEPARATE`） | ✅ 子项继承（只作用于带符号数值项；叶子上显式写的 SIGN 优先） |
 | `JUSTIFIED RIGHT` / `JUST RIGHT` | ✅ 字符类右对齐（左侧补 `0x40`）；数值与编辑型不受影响 |
+
+**编辑型 PIC 的边界**（2026-11-11 审计）：numeric-edited 的存储宽度按
+IBM「Symbols used in the PICTURE clause」计算 —— `V` / `P` / `S` 不占
+字符位置，插入字符各占一位。因此 `PIC ZZ9V99` 是 5 字节、`PIC ZZ9PP`
+是 3 字节、`PIC $9,999.99` 是 9 字节。两组非法写法在解析期拒绝：
+`S` 出现在 numeric-edited 里（`S` 只用于 numeric 项），以及 `P` 夹在
+数字位之间（`9PP9` / `9(3)PPV99`；IBM 要求 P 是数字位最左或最右端的
+连续一段）。
 
 **`PIC N(n)` 的容量单位是 UTF-16 码元，不是「字符个数」**：`N(n)` 占 `2n` 字节，
 每个码元 2 字节，不足补 `00 20`（U+0020）。基本平面（BMP）字符占 1 码元，

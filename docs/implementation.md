@@ -167,3 +167,40 @@ copybook verify  → 失败：value 32767 exceeds 4 decimal digits (field holds 
 - 接受并逐字节往返：`S9(4)` 的 `270F`（9999）/ `D8F1`（-9999）、`S9(9)` 的 `3B9AC9FF`（999999999）、`S9(18)` 的 `0DE0B6B3A763FFFF`（18 位边界）
 
 `PIC S9(18) COMP` 是这条规则最容易含糊的地方：8 字节补码能到 `2^63-1`（19 位），但声明容量只有 `10^18-1`，所以 `7FFFFFFFFFFFFFFF` 同样是**解码错误**而不是"一个很大的数"。
+
+## 10. numeric-edited 的存储宽度：数的是「字符位置」不是「模式串字符」
+
+编辑型（`ZZ,ZZ9.99` / `$9,999.99` / `9(5)CR`）在存储层就是显示字符，但
+**模式串里的符号并非都占字符位置**。IBM Enterprise COBOL「Symbols used
+in the PICTURE clause」逐符号给出 Size：
+
+| 符号 | 占存储 | 备注 |
+|---|---|---|
+| `9 Z * 0` | 1 位 | 数字/替换位置 |
+| `$ , . + - / B CR DB` | 1 位 | 插入字符；`CR`/`DB` 各 2 位 |
+| `V` | **0** | 隐含小数点 |
+| `P` | **0** | 缩放位（numeric-edited 里同样不占） |
+| `S` | **0** | 符号指示；且 numeric-edited 的符号集里根本没有 S |
+
+早期实现用 `pic_storage_len`（展开后字符数）当宽度，`PIC ZZ9V99` 算成
+6、`PIC ZZ9PP` 算成 5，后面的字段整体错位。现在 `edited_storage_len`
+跳过 V/P/S，`ZZ9V99`=5、`ZZ9PP`=3、`$9,999.99`=9。回归：
+`src/edited_width_test.mbt`。
+
+同一轮还收紧了两个非法形态：numeric-edited 里的 `S`
+（`src/edited_sign_symbol_test.mbt`）与夹在数字位之间的 `P`
+（`9PP9` / `9(3)PPV99`，`src/pic_pscale_placement_test.mbt`）。
+
+## 11. 旁路键的「字段类型对账」
+
+`__nibbles` 只服务 zoned（Numeric+Display）与 packed（Numeric+Comp3），
+`__float_hex` 只服务 COMP-1/COMP-2。保留键必须按字段类型对账：一个错位的
+`__nibbles` 若落在文本字段上，会把 `"00012"` 强行解析成 `Decimal(12)`，
+encode 写出 `"12   "` —— exit 0 的静默数据改写。现在
+`field_accepts_nibbles` 同时用于消费循环与键对账；落在错误类型上的键走
+`does not match any field`。回归：`src/jsonl_nibbles_field_type_test.mbt`。
+
+`__tail_hex` / `__filler_hex` 则是 decode 时的空洞快照：编辑视图导致空洞
+收缩时，快照按「全视图不写」的超集位置回填、只写当前仍是空洞的字节；
+两个长度都不符仍报 `InvalidBypass`（`src/jsonl_bypass_edit_test.mbt`）。
+

@@ -98,6 +98,7 @@ IBM HFP 没有 IEEE 那种「负零是特殊值」的语义，但**符号位仍�
 |---|---|---|
 | 符号半字节（`C` / `F` / `D`） | `Decimal.sign_nibble` | `F` 正号被改写成 `C`，字节不一致 |
 | **数值的负零**（zoned / packed） | `Decimal.negative` + `__nibbles.sign` | `-0` 变 `+0`：`F0 F0 D0` → `F0 F0 F0`、`00 0D` → `00 0C` |
+| **`BLANK WHEN ZERO` 的非空格零形态** | `Decimal.sign_nibble`（全空格零为 `None`） | `F0 F0 F0` / `F0 F0 C0` / `F0 F0 F0 4E` 被改写成 `40 40 40` / `40 40 40 40` |
 | packed 前导填充零 | `Decimal.pad_nibble` | 偶数位字段必须在最左补零；非零填充拒绝 |
 | 浮点符号位（含 ±0） | `Decimal` / `Float` 的符号 | `-0.0` 变 `+0.0` |
 | 浮点格式（HFP / IEEE） | `RecordLayout.float_mode` | 数值完全错误 |
@@ -108,6 +109,28 @@ IBM HFP 没有 IEEE 那种「负零是特殊值」的语义，但**符号位仍�
 | **`JUSTIFIED RIGHT` 的对齐方向** | `PicClause.justified_right` | 右对齐字段被写成左对齐：`"AB"` 落盘成 `C1 C2 40 40 40`（应 `40 40 40 C1 C2`），主机读出的值变成 `"AB   "` |
 
 **负零为什么单独列一行**：整数型的 `0` 与 `-0` 数值相等，但 zoned / packed 的符号半字节不同，字节也就不同。走 `decode → JSONL → encode` 时，文本这一环靠不住——JSON 的数字是 double，`-0` 经核心 JSON 词法后原文不保留，放手写的 `-0` 也可能被折叠成 `0`。所以 **JSONL 里的 `__nibbles.sign` 是符号的权威来源**：`0xD` 就是负号，系数为 0 时同样生效。修复前这条旁路只被当作"写回哪个半字节"的提示，`decode` 出 `-0`、`encode` 回 `+0`，而 `verify`（内存路径，`Decimal.negative` 没丢）还报 `byte-identical roundtrip` —— 两条路径互相矛盾。回归测试在 `src/negative_zero_test.mbt`，同时锁定文本链路与 `verify` 两条路径的结论一致。
+
+**`__nibbles` 只属于 zoned / packed**：只有 `PIC 9(n)` 的 DISPLAY（zoned）
+与 `COMP-3`（packed）在存储层有符号半字节/填充半字节。落在文本、NATIONAL、
+编辑型、COMP 二进制或 COMP-1/2 字段上的 `__nibbles` 是**损坏/错位**，
+`parse_jsonl_row` 报 `does not match any field`，不会把文本强行解析成
+`Decimal`（否则 `PIC X(5)` 的 `"00012"` 会被静默写成 `"12"`）。回归：
+`src/jsonl_nibbles_field_type_test.mbt`。
+
+**`BLANK WHEN ZERO` 的零形态**：该子句描述「值为 0 时**写出**全空格」，
+但记录里也可能出现非空格写法的零（`F0 F0 F0`、`F0 F0 C0`、
+`F0 F0 F0 4E`）。decode 接受它们，encode 就必须原样还回去：全空格零的
+`Decimal.sign_nibble` 为 `None`（写回空格），非空格零带 `Some(F|C)`
+（带原始零形态走普通 zoned 编码）。只按「系数为 0」写空格会让
+`decode → JSONL → encode` 静默改字节，并让 `verify` 报 mismatch。
+回归：`src/blank_when_zero_zero_form_test.mbt`。
+
+**视图编辑与尾部/中部空洞旁路**：`__tail_hex` / `__filler_hex` 是 decode
+时的快照。用户把解不出的 REDEFINES 视图从 `null` 改成具体值后，空洞收缩，
+快照中对应位置的字节必须让位于编辑（只回填当前仍是空洞的位置），不能
+因为长度不等于当前空洞就失败。长度既不等于当前空洞、也不等于「全视图
+不写」的超集空洞时，仍按损坏报 `InvalidBypass`。回归：
+`src/jsonl_bypass_edit_test.mbt`。
 
 `FILLER` 那条值得单独说：它**占字节但不产值**，所以解码结果里没有它。字节保真由两条旁路承载（P1-2 修复后）：`verify`（内存路径）通过宽容解码附带的 `__record_bytes` 把 FILLER 区原样写回；`decode → JSONL → encode` 路径通过 `__filler_hex`（中部 FILLER 区，与 `__tail_hex` 同一手法，全 `0x40` 空格填充不携带）把这段字节带回编码器。JSONL 输出里仍然**不出现** FILLER 字段——旁路键是保留键，不是字段。
 

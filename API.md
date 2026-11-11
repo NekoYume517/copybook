@@ -170,6 +170,12 @@ pub fn RecordLayout::covered_bytes(self : RecordLayout) -> Int
 | `S9(n)V9(m)` | COMP-3 | ceil((n + m + 1) / 2) |
 | `N(n)` | NATIONAL (UTF-16BE) | n * 2（n 个 UTF-16 码元） |
 | 任意 | `SIGN ... SEPARATE` | +1 |
+| 编辑型（`ZZ9.99` / `$9,999.99` / `9(5)CR`） | DISPLAY | 模式串展开后的**字符位置数**：`V` / `P` / `S` 不占（IBM PICTURE 符号表），插入字符 `$ , . + - / B 0 CR DB *` 各占 1 |
+
+> 编辑型的两个解析期约束（2026-11-11 审计）：numeric-edited 的符号集
+> 是 `B P V Z 9 0 / , . + - CR DB * cs`，**没有 `S`**（`S` 只用于 numeric
+> 项，且不占字符位置）；`P` 必须是数字位最左或最右端的连续一段
+> （`9PP9` / `9(3)PPV99` 报 `SyntaxError`）。
 
 **权威布局答案（已用 Python 交叉核对，测试必须匹配）：**
 
