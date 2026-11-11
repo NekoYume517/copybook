@@ -411,21 +411,28 @@ priv struct Builder {
 /// 若 A REDEFINES B、C 也 REDEFINES B，则 A/B/C 三个字段共享同一个 id。
 /// 若 D REDEFINES A（嵌套重定义），同样归入该 id。
 ///
-/// 返回：小写字段名 → 组 id（从 1 开始）。
+/// **组键必须是字段路径，不是裸字段名**（2026-11-11 审计）。旧实现用
+/// `Map[小写名字, id]`，于是任何同名但无关的字段（不同组下的 `Y`、嵌套组
+/// 里的 `A`）都会被算进同一个重定义组：
+///   - `check_redefine_overlap` 看到同组就跳过，视图吞掉别的字段也能过；
+///   - REDEFINES 目标解析也按裸名查（见 `Builder.by_name`），会指到别处的
+///     同名项上。`R.G.Y` 与 `R.Y` 是两个字段，`R.G1.A` 与 `R.G2.A` 也是。
+///
+/// 返回：小写字段路径 → 组 id（从 1 开始）。
 fn collect_redefine_groups(specs : Array[FieldSpec]) -> Map[String, Int32] {
+  let entries : Array[(String, String?)] = []
+  collect_redefine_entries(specs, "", entries)
   let groups : Map[String, Int32] = Map([])
   let mut next_id = 1
   // 反复扫描直到不再新增，以处理"重定义链"（D→A→B）的顺序无关性。
   let mut changed = true
   while changed {
     changed = false
-    let pending : Array[FieldSpec] = []
-    collect_flat(specs, pending)
-    for spec in pending {
-      match spec.redefines {
-        Some(target) => {
-          let t = target.to_lower()
-          let s = spec.name.to_lower()
+    for (path, target) in entries {
+      match target {
+        Some(target_path) => {
+          let s = path.to_lower()
+          let t = target_path.to_lower()
           if !groups.contains(t) && !groups.contains(s) {
             // 全新的一组：目标与视图同时登记。
             groups[t] = next_id
@@ -448,11 +455,23 @@ fn collect_redefine_groups(specs : Array[FieldSpec]) -> Map[String, Int32] {
 }
 
 ///|
-/// 把（可能嵌套的）spec 树摊平成数组，便于预扫描。
-fn collect_flat(specs : Array[FieldSpec], out : Array[FieldSpec]) -> Unit {
+/// 把（可能嵌套的）spec 树摊平成 `(字段路径, 重定义目标路径?)` 数组。
+///
+/// 目标路径按**同一个父项**拼：`05 C REDEFINES A` 在 `R.G` 下时目标是
+/// `R.G.A`，而不是全局的某个 `A`。顶层（多个 `01`）的目标就是裸名。
+fn collect_redefine_entries(
+  specs : Array[FieldSpec],
+  prefix : String,
+  out : Array[(String, String?)],
+) -> Unit {
   for spec in specs {
-    out.push(spec)
-    collect_flat(spec.children, out)
+    let path = if prefix == "" { spec.name } else { prefix + "." + spec.name }
+    let target : String? = match spec.redefines {
+      Some(t) => Some(if prefix == "" { t } else { prefix + "." + t })
+      None => None
+    }
+    out.push((path, target))
+    collect_redefine_entries(spec.children, path, out)
   }
 }
 
@@ -525,9 +544,17 @@ fn compile_field(
   inherited_redefining : Bool,
 ) -> Int32 raise ParseError {
   let save = b.cursor
+  let path = if path_prefix == "" {
+    spec.name
+  } else {
+    path_prefix + "." + spec.name
+  }
   // 自身被登记为重定义成员则用自身 id，否则继承父组 id（REDEFINES 组的子项
   // 与组本身共享同一段字节，必须标同一个组）。
-  let group_id = match groups.get(spec.name.to_lower()) {
+  //
+  // **按路径查，不能按裸名**（2026-11-11 审计）：不同组下的 `A` / `Y` 是
+  // 不同字段；按名字查会把无关的同名字段算进同一个组，让重叠检查失效。
+  let group_id = match groups.get(path.to_lower()) {
     Some(id) => id
     None => inherited_group
   }
@@ -549,11 +576,6 @@ fn compile_field(
     None => ()
   }
   let field_base = b.cursor
-  let path = if path_prefix == "" {
-    spec.name
-  } else {
-    path_prefix + "." + spec.name
-  }
   let occurs = if spec.occurs <= 0 { 1 } else { spec.occurs }
   // FILLER：COBOL 语义是「占字节但不进输出」——必须推进游标、参与布局，
   // 但不能进入 fields（否则它会出现在解码结果里，且多个 FILLER 会撞同一个
