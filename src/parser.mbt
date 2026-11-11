@@ -693,8 +693,12 @@ fn parse_entry_clauses(
   let mut sign_declared = false
   // 声明了 JUSTIFIED RIGHT（CB-B5）：编码时右对齐、左侧补 0x40。
   let mut is_justified_right = false
+  let mut justified_line = 0
+  let mut justified_col = 0
   // 声明了 BLANK WHEN ZERO（CB-B7）：DISPLAY 数值为 0 时落盘为全空格。
   let mut is_blank_when_zero = false
+  let mut blank_line = 0
+  let mut blank_col = 0
 
   while !p.at_eof() && !p.at_dot() {
     let tok = p.peek()
@@ -845,6 +849,8 @@ fn parse_entry_clauses(
       // 记录标志（CB-B5）：旧实现整段吃掉、编码恒左对齐，IBM 的右对齐
       // 语义因此完全失效（详见 PicClause.justified_right）。
       is_justified_right = right
+      justified_line = tok.line
+      justified_col = tok.column
       continue
     }
     if p.at_keyword("SYNC") || p.at_keyword("SYNCHRONIZED") {
@@ -874,6 +880,8 @@ fn parse_entry_clauses(
       // 记录标志（CB-B7）：旧实现整段吃掉，于是「零落盘为全空格」的语义
       // 完全失效 —— 合法 IBM 记录被拒（详见 PicClause.blank_when_zero）。
       is_blank_when_zero = true
+      blank_line = tok.line
+      blank_col = tok.column
       continue
     }
 
@@ -973,6 +981,29 @@ fn parse_entry_clauses(
 
   // 组项上的 USAGE 单独记下来供子项继承（组项自己没有 PIC）。
   // 无 PIC 的浮动项已合成 PIC 走叶子分支，不再作为组项继承源。
+  //
+  // **JUSTIFIED / BLANK WHEN ZERO 是基本项专属子句**（2026-11-11 审计）：
+  //   - IBM：JUSTIFIED 只能用于 alphabetic / alphanumeric / national 基本项；
+  //   - BLANK WHEN ZERO 只能用于 numeric / numeric-edited 基本项。
+  // 旧实现照收后原地丢弃（组项没有 PicClause 承载），用户以为声明生效、
+  // 实际布局与编码完全不变。按「绝不静默修正」在解析期点名拒绝。
+  // 组级 USAGE / SIGN 是合法继承，不受影响。
+  if final_pic is None {
+    if is_justified_right {
+      raise SyntaxError(
+        justified_line,
+        justified_col,
+        "JUSTIFIED 只能用于基本字符项（alphabetic / alphanumeric / national），不能用在组项 '\{name}' 上（IBM 规则）",
+      )
+    }
+    if is_blank_when_zero {
+      raise SyntaxError(
+        blank_line,
+        blank_col,
+        "BLANK WHEN ZERO 只能用于基本数值项（numeric / numeric-edited），不能用在组项 '\{name}' 上（IBM 规则）",
+      )
+    }
+  }
   let group_usage = match pic {
     Some(_) => None
     None =>
