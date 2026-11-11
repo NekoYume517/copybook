@@ -1,4 +1,23 @@
 ///|
+/// 该字段是否会产出/消费 `__nibbles`（符号半字节与 packed 填充半字节）。
+///
+/// 只有 zoned（Numeric + Display）与 packed（Numeric + Comp3）在存储层有
+/// 这两个半字节。文本 / NATIONAL / 编辑型 / COMP 二进制 / 浮点都没有这个
+/// 位置；把 `__nibbles` 套到它们身上会把文本强行解析成 Decimal，静默改写
+/// 内容（`PIC X(5)` 的 `"00012"` 会变成 `"12"`）—— 见 2026-11-11 审计。
+fn field_accepts_nibbles(field : FieldLayout) -> Bool {
+  match field.pic.category {
+    Numeric =>
+      match field.pic.usage {
+        Display => true
+        Comp3 => true
+        _ => false
+      }
+    _ => false
+  }
+}
+
+///|
 /// 从 JSONL 行解析出一个记录的值映射。
 ///
 /// 接受两种数值形态：
@@ -337,6 +356,12 @@ pub fn parse_jsonl_row(
       // 2026-11-08 审计：旧豁免把 `"-0"` 与 `"0"` 一起豁免，编辑后的
       // 正零被静默翻回负零 `00 0D`）。
       for field in layout.fields {
+        // 只有 zoned / packed 十进制有符号半字节与填充半字节。其它字段上的
+        // `__nibbles` 保持未消费，交给末尾的键对账报错 —— 否则文本会被
+        // 强行解析成 Decimal 并改写（2026-11-11 审计）。
+        if !field_accepts_nibbles(field) {
+          continue
+        }
         // 旁路键查找与字段值查询同款宽容度（CB-5）：先完整路径，失败
         // 回退裸名。命中即从 map 里移除（CB-A4 对账用：剩下来的键就是
         // 没有命中任何字段的损坏键）。
@@ -431,7 +456,7 @@ pub fn parse_jsonl_row(
       //     同时出现时路径优先）→ 合法冗余，沿用字段值同键双写的宽容。
       let nib_known = fn(k : String) -> Bool {
         for f in layout.fields {
-          if f.path == k || f.name == k {
+          if (f.path == k || f.name == k) && field_accepts_nibbles(f) {
             return true
           }
         }
