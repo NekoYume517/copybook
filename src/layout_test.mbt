@@ -297,7 +297,8 @@ test "OCCURS 在最外层叶子上" {
   // 叶子自带 OCCURS 与组级一样在布局层摊平成 TAGS(1..3)（回归修复）：
   // 数据面（decode/render/encode）只见过摊平后的条目，裸路径不再存在，
   // 否则 decode 写 R.TAGS(i) 而 render 查 R.TAGS 会输出 {"R.TAGS":null}。
-  // by_name 保留裸名 -> 第一个元素的偏移，手写 JSON 用裸名仍可命中。
+  // by_name 保留裸路径 -> 第一个元素的偏移（只服务 REDEFINES 目标解析），
+  // 手写 JSON 的裸名命中靠 encode 的 name 后备，与本表无关。
   // find 扫 all_fields 会命中 TAGS 组条目本身（合法）；数据面 fields
   // 里必须只有带下标的展开条目，否则 decode 写 R.TAGS(i) 而 render 查
   // R.TAGS 会输出 {"R.TAGS":null}

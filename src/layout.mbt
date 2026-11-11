@@ -562,10 +562,28 @@ fn compile_field(
   // 目标字段的子项保持 false（目标是字节的原主）。
   let is_redefining = spec.redefines is Some(_) || inherited_redefining
   // REDEFINES：把游标挪回目标字段的偏移，让两者共享同一段字节。
+  //
+  // **目标按"同父路径"查，不能按裸名**（2026-11-11 审计）：COBOL 的
+  // REDEFINES 目标是同一父项下的兄弟。旧实现查全局 `by_name[裸名]`，
+  // 而该表被后定义的任何同名字段覆盖：
+  //
+  //     05 G.
+  //        10 A PIC X(2).
+  //        10 B.
+  //           15 A PIC X(2).       <- 覆盖 by_name["a"]
+  //        10 C REDEFINES A PIC X(2).   <- 指到 B.A（offset 2）而不是 G.A
+  //
+  // 视图因此落在错误偏移：相邻字段被覆盖、合法 copybook 还会被布局层的
+  // 重叠检查误判。`check_redefine_parentage` 已保证目标兄弟存在，这里按
+  // `path_prefix + "." + target` 精确取那一个。
   match spec.redefines {
     Some(target_name) => {
-      let key = target_name.to_lower()
-      match b.by_name.get(key) {
+      let target_path = if path_prefix == "" {
+        target_name
+      } else {
+        path_prefix + "." + target_name
+      }
+      match b.by_name.get(target_path.to_lower()) {
         Some(target_offset) => b.cursor = target_offset
         None =>
           raise InvalidLayout(
@@ -611,7 +629,7 @@ fn compile_field(
       if occurs > 1 {
         // 展开成 occurs 份独立叶子：offset 逐元素推进，键带 1 起始下标，
         // occurs 归 1（数据面不再看到任何展开语义）。第 1 份同时登记
-        // 裸路径别名（by_name），手写 JSON 用裸名仍能命中第一个元素。
+        // 裸路径别名（by_name），手写 JSON 用裸路径仍能命中第一个元素。
         let mut k = 1
         while k <= occurs {
           let expanded : FieldLayout = {
@@ -634,7 +652,6 @@ fn compile_field(
         b.all.push(fl)
       }
       if !is_filler {
-        b.by_name[spec.name.to_lower()] = field_base
         b.by_name[path.to_lower()] = field_base
       }
       b.cursor = checked_offset(field_base, total, "field '\{spec.name}' span")
@@ -719,7 +736,6 @@ fn compile_field(
         is_synced: spec.is_synced,
       }
       b.all.push(fl)
-      b.by_name[spec.name.to_lower()] = field_base
       b.by_name[path.to_lower()] = field_base
       b.cursor = checked_offset(field_base, total, "group '\{spec.name}' span")
       // all_mark 之后新增的子项条目保持原样（渲染组结构用），

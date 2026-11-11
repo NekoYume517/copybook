@@ -54,3 +54,27 @@ test "redefines path: two unrelated groups with the same leaf name stay separate
   inspect(g2a.redefine_group, content=g2c.redefine_group.to_string())
   assert_true(g1a.redefine_group != g2a.redefine_group)
 }
+
+///|
+test "redefines path: target is the sibling, not a nested same-named item" {
+  // `B` 里也有一个 `A`。COBOL 的 REDEFINES 目标是**同一父项下的兄弟**，
+  // 所以 C 必须落在 R.G.A（offset 0），不是 R.G.B.A（offset 2）。
+  let src = "01 R.\n  05 G.\n    10 A PIC X(2).\n    10 B.\n      15 A PIC X(2).\n    10 C REDEFINES A PIC X(2).\n"
+  let layout = compile_layout(parse_copybook(src))
+  assert_eq(layout.find("R.G.A").unwrap().offset, 0)
+  assert_eq(layout.find("R.G.B.A").unwrap().offset, 2)
+  assert_eq(layout.find("R.G.C").unwrap().offset, 0)
+  assert_eq(layout.byte_length, 4)
+}
+
+///|
+test "redefines path: top-level target is not a later same-named child" {
+  // 顶层 A 在 offset 0；G.A 在 offset 2。B 的裸名查询若命中后者的偏移，
+  // 这个完全合法的 copybook 会被布局层自己判成"视图重叠"而拒绝。
+  let src = "01 R.\n  05 A PIC X(2).\n  05 G.\n    10 A PIC X(2).\n  05 B REDEFINES A PIC X(2).\n"
+  let layout = compile_layout(parse_copybook(src))
+  assert_eq(layout.find("R.A").unwrap().offset, 0)
+  assert_eq(layout.find("R.B").unwrap().offset, 0)
+  assert_eq(layout.find("R.G.A").unwrap().offset, 2)
+  assert_eq(layout.byte_length, 4)
+}
