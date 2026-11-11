@@ -367,7 +367,30 @@ fn check_redefine_parentage(
 /// `01` 层不豁免：本实现把多个 01 并列拼接成一条记录，跨 01 的字节重叠
 /// 同样是数据损坏 —— 跨 01 的**父项**问题已由 `check_redefine_parentage`
 /// 拦下，能走到这里的 01 视图必然是顶层兄弟，长度超限仍应报错。
-fn check_redefine_overlap(leaves : Array[FieldLayout]) -> Unit raise ParseError {
+///
+/// **目标项的整棵子树也豁免**（2026-11-12 审计，嵌套 REDEFINES）。组 id 只表达
+/// 「这两个字段共享同一段字节」的**直接**父子关系，不表达「目标组内部的每个
+/// 叶子都在这段存储之内」：
+///
+///     01 R.
+///        05 M.                         <- 跨度 2
+///           10 A PIC X(2).
+///           10 B REDEFINES A PIC X(2).  <- A←B 是组 1
+///        05 V REDEFINES M PIC X(4).     <- M←V 是组 2
+///
+/// 于是「V 的跨度 vs A/B 的跨度」被当成两个无关字段抢字节，合法形态被拒。
+/// `exempt_spans`（由 `compile_field` 在遇到 REDEFINES 时登记「目标存储区间」）
+/// 就是补上这条语义：视图可以覆盖**它目标跨度之内**的任何叶子。
+///
+/// 不是放宽成「同组或同子树就放过」：豁免区间只到目标跨度为止，
+/// `05 M { A, B REDEFINES A }` 之后再来 `05 W X(2)`，视图 `V X(6)` 溢出到 W
+/// 身上仍然报错（B10 原意）。判据按**双向**查：`A` 与 `V` 分属两组，
+/// 「V 是视图、A 在 V 的目标区间内」与「A 是某视图的目标、V 在 A 的区间内」
+/// 必须同样成立，否则检查顺序会决定结论。
+fn check_redefine_overlap(
+  leaves : Array[FieldLayout],
+  exempt_spans : Array[(Int32, Int32, Int32)],
+) -> Unit raise ParseError {
   for view in leaves {
     if view.redefine_group == 0 {
       continue
@@ -381,12 +404,39 @@ fn check_redefine_overlap(leaves : Array[FieldLayout]) -> Unit raise ParseError 
       let os_ = other.offset
       let oe = other.offset + other.total_length
       if vs < oe && os_ < ve {
+        // 目标跨度之内的一切都属于「视图有权重新描述的存储」
+        if span_within_exempt(exempt_spans, view.redefine_group, os_, oe) ||
+          span_within_exempt(exempt_spans, other.redefine_group, vs, ve) {
+          continue
+        }
         raise InvalidLayout(
           "REDEFINES view '\{view.path}' (offset \{vs}, length \{view.total_length}) overlaps field '\{other.path}' (offset \{os_}, length \{other.total_length}): a redefining view may only re-describe its target's storage — shorten the view or move the following field (IBM: REDEFINES must not span other items)",
         )
       }
     }
   }
+}
+
+///|
+/// `[start, end)` 是否完整落在该重定义组的某个「目标存储区间」里。
+///
+/// 只判**完整包含**：部分重叠说明视图已经伸到目标之外，那部分字节不归它，
+/// 交给 B10 报错。`group_id == 0`（主视图）没有豁免区间。
+fn span_within_exempt(
+  exempt_spans : Array[(Int32, Int32, Int32)],
+  group_id : Int32,
+  start : Int32,
+  end : Int32,
+) -> Bool {
+  if group_id == 0 {
+    return false
+  }
+  for (g, ts, te) in exempt_spans {
+    if g == group_id && start >= ts && end <= te {
+      return true
+    }
+  }
+  false
 }
 
 ///|
@@ -399,6 +449,14 @@ priv struct Builder {
   leaves : Array[FieldLayout]
   all : Array[FieldLayout]
   by_name : Map[String, Int32]
+  /// 字段路径 → 该字段（含 OCCURS 与组内全部子项）占用的字节跨度。
+  /// 与 `by_name` 同一套登记点：REDEFINES 解析要同时拿到目标的**偏移**与
+  /// **跨度**（跨度用来登记 `exempt_spans`）。
+  by_span : Map[String, Int32]
+  /// `(重定义组 id, 目标起始偏移, 目标结束偏移)`：视图可以重新描述的存储区间。
+  /// 由 `compile_field` 在遇到 REDEFINES 子句时登记，`check_redefine_overlap`
+  /// 用它豁免目标组内部的叶子（2026-11-12 审计，嵌套 REDEFINES）。
+  exempt_spans : Array[(Int32, Int32, Int32)]
 }
 
 ///|
@@ -584,7 +642,29 @@ fn compile_field(
         path_prefix + "." + target_name
       }
       match b.by_name.get(target_path.to_lower()) {
-        Some(target_offset) => b.cursor = target_offset
+        Some(target_offset) => {
+          b.cursor = target_offset
+          // 目标的跨度必须在**同一次**解析里拿到：视图有权重新描述的是
+          // 「目标项那一段存储」，不是「目标这个名字」。组视图（目标是一个
+          // 含多个叶子、甚至自身内部还有 REDEFINES 的组）能否通过重叠检查，
+          // 全靠这个区间（2026-11-12 审计）。
+          match b.by_span.get(target_path.to_lower()) {
+            Some(target_span) =>
+              b.exempt_spans.push(
+                (
+                  group_id,
+                  target_offset,
+                  checked_offset(
+                    target_offset, target_span, "REDEFINES target span",
+                  ),
+                ),
+              )
+            None =>
+              raise InvalidLayout(
+                "REDEFINES target '\{target_name}' has no storage span (line \{spec.line})",
+              )
+          }
+        }
         None =>
           raise InvalidLayout(
             "REDEFINES target '\{target_name}' not found (line \{spec.line})",
@@ -653,6 +733,7 @@ fn compile_field(
       }
       if !is_filler {
         b.by_name[path.to_lower()] = field_base
+        b.by_span[path.to_lower()] = total
       }
       b.cursor = checked_offset(field_base, total, "field '\{spec.name}' span")
       total
@@ -737,6 +818,7 @@ fn compile_field(
       }
       b.all.push(fl)
       b.by_name[path.to_lower()] = field_base
+      b.by_span[path.to_lower()] = total
       b.cursor = checked_offset(field_base, total, "group '\{spec.name}' span")
       // all_mark 之后新增的子项条目保持原样（渲染组结构用），
       // 但数据面只看 leaves，已经展开完毕。
@@ -805,7 +887,14 @@ pub fn compile_layout(
   // 长度/重叠约束要等偏移算完才判。两者都报 InvalidLayout，与既有的
   // 「REDEFINES target not found」同一错误类，CLI 文案一致。
   check_redefine_parentage(specs)
-  let b = Builder::{ cursor: 0, leaves: [], all: [], by_name: Map([]), }
+  let b = Builder::{
+    cursor: 0,
+    leaves: [],
+    all: [],
+    by_name: Map([]),
+    by_span: Map([]),
+    exempt_spans: [],
+  }
   let mut record_name = ""
   for spec in specs {
     if record_name == "" {
@@ -842,7 +931,7 @@ pub fn compile_layout(
   check_unique_leaf_paths(sorted_leaves)
   // REDEFINES 视图不得吞掉其他字段的字节（CB-B10）：需要真实偏移，
   // 只能在布局算完之后判。放在路径唯一性之后，报错顺序更贴近根因。
-  check_redefine_overlap(sorted_leaves)
+  check_redefine_overlap(sorted_leaves, b.exempt_spans)
   RecordLayout::{
     name: record_name,
     byte_length: b.cursor,
