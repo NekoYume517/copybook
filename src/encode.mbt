@@ -1209,6 +1209,20 @@ pub fn encode_record(
           let need = gap_total(gaps)
           if bs.length() == need {
             restore(gaps, bs, false)
+          } else if need == 0 {
+            // **空洞已经被字段值全覆盖 = 快照整条被编辑取代**（2026-11-12
+            // 审计，HANDOVER 16.5 遗留第 2 条）：快照字节全部落在尾部区间
+            // `[主视图结束偏移, byte_length)` 内，而这段区间此刻每个字节都
+            // 由某个字段写出 —— 快照指向的位置全部被覆盖，没有任何字节需要
+            // 回填。丢弃它不会丢信息，这是唯一不靠额外元数据也能证明安全的
+            // 形态（其余长度含混的情形按 CB-A2 继续报错）。
+            //
+            // 触发形态（decode 多视图、只有一个视图解不出）：
+            //   05 M X(4). 05 V2 REDEFINES M X(6). 05 V3 REDEFINES M X(8).
+            //   记录 C1..C6 FF EE -> {"R.V3":null,"__tail_hex":"ffee"}
+            //   用户把 V3 改成 "ABCDEFGH" -> 旧实现在这里 exit 1
+            //   `__tail_hex must be exactly 0 byte(s) ... got 2`。
+            ()
           } else {
             // 编辑视图导致空洞收缩时，快照的长度对应「全视图不写」的超集。
             // 只回填当前仍是空洞的位置（编辑优先）；其它长度按 CB-A2 报错。
@@ -1232,6 +1246,10 @@ pub fn encode_record(
           let need = gap_total(gaps)
           if bs.length() == need {
             restore(gaps, bs, false)
+          } else if need == 0 {
+            // 与 `__tail_hex` 同一规则：中部空洞被字段值全覆盖时，快照整体
+            // 是过时快照，丢弃不会丢信息。
+            ()
           } else {
             let sup = filler_gaps(layout, None)
             if bs.length() == gap_total(sup) {
