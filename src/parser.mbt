@@ -1458,22 +1458,24 @@ fn parse_edited(
   line : Int32,
   column : Int32,
 ) -> PicClause raise ParseError {
-  let mut signed = false
   let mut int_digits = 0
   let mut frac_digits = 0
   let mut after_point = false
-  for i, c in chars {
+  for c in chars {
     match c {
+      // **numeric-edited 的符号集里没有 S**（2026-11-11 审计）。
+      // IBM「Data categories and PICTURE rules / Numeric-edited items」：
+      //   B P V Z 9 0 / , . + - CR DB * cs
+      // S 只用于 numeric 项（9/P/S/V），符号在 numeric-edited 里由
+      // `+` `-` `CR` `DB` 表达。旧实现照收 S 且不产生任何符号位置，
+      // 等于把非法 copybook 静默当成无符号显示文本 —— 与「绝不静默修正」
+      // 冲突，这里显式拒绝并点名正确的符号集。
       'S' =>
-        if i == 0 {
-          signed = true
-        } else {
-          raise SyntaxError(
-            line,
-            column,
-            "PIC '\{text}' 的符号 S 只能出现在首位",
-          )
-        }
+        raise SyntaxError(
+          line,
+          column,
+          "numeric-edited PIC '\{text}' 不允许 S：numeric-edited 的符号集是 B P V Z 9 0 / , . + - CR DB * cs（符号由 + / - / CR / DB 表达）；S 只能用在 numeric 项（9/P/S/V）上",
+        )
       'V' => after_point = true
       // 编辑型里的 `.` 是**真实的**小数点（占一个存储位），
       // 它同时是整数位与小数位的分界。
@@ -1500,7 +1502,8 @@ fn parse_edited(
     digits: int_digits,
     scale: frac_digits,
     storage_digits: int_digits + frac_digits,
-    signed,
+    // numeric-edited 没有 S（见上面的拒绝分支），符号由编辑符号表达。
+    signed: false,
     usage: Display,
     sign_separate: false,
     sign_leading: false,
