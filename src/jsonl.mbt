@@ -246,8 +246,16 @@ pub fn parse_jsonl_row(
             // `{"__float_hex":{"R.D":"4180000000000001"}}` 被判成「用户把值
             // 编辑成了 0」，旁路当陈旧快照丢弃，encode 写出整片 0x00 ——
             // 声明的字节事实被静默换成 0.0，退出码 0、零提示。
+            // **空串 = 没有值**（契约 A2，2026-11-12）：数值/浮点字段上的
+            // `""` 表示「本行没有给这个字段值」，与 `null` / 缺键同义，
+            // 绝不等于 0.0。文本字段的空串在 encode 侧另有语义（若干空格），
+            // 但它不会走到这里 —— 本循环只处理 COMP-1/COMP-2。
+            //
+            // 旧实现把 `""` 交给 `parse_double`，异常被下面的
+            // `catch { _ => 0.0 }` 兜成 0.0，于是与旁路字节解出的值比较时
+            // 判成「用户把值编辑成了 0」，旁路当陈旧快照丢弃 → 整片 0x00。
             let value_text : String? = match out.get(field.path) {
-              Some(Text(s)) => Some(s)
+              Some(Text(s)) => if s.length() == 0 { None } else { Some(s) }
               Some(Float(f)) =>
                 Some(
                   if f.is_nan() {

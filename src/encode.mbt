@@ -640,6 +640,38 @@ fn encode_field(
   if field.is_redefining && v is Null {
     return Ok(())
   }
+  // **空串在数值/浮点字段上是「没有值」，不是 0**（契约 A2，2026-11-12）。
+  //
+  // `""` 与 `null` / 缺键同义，但它没有 `null` 那份「decode 写出来的未赋值
+  // 存储」含义 —— 数值字段的 `null` 按 COBOL 惯例写 0（`as_decimal` 的
+  // `Null` 分支），而手写的 `""` 若也写成 0，就是把「我没给这个值」静默
+  // 变成一个具体的数，正是「绝不静默修正」要拒绝的形态。所以这里显式分流：
+  //
+  //   - 重定义视图 → 跳过（这段字节由主视图写出，与 `null` 的视图语义一致）
+  //   - 其它 → 带字段路径的 data error（CLI exit 1）
+  //
+  // 文本/编辑型/NATIONAL 不受影响：它们的 `""` 是合法的「若干空格」。
+  // 浮点字段带 `__float_hex` 旁路时，`parse_jsonl_row` 已把值换成
+  // `FloatRaw`（原始字节），根本不会走到这里。
+  match pic.category {
+    Numeric =>
+      match v {
+        Text(s) =>
+          if s.length() == 0 {
+            if field.is_redefining {
+              return Ok(())
+            }
+            return Err(
+              InvalidNumeric(
+                offset,
+                "field '\{field.path}' has no value: an empty string on a numeric/float field means \"no value\" (it is not 0) — give a number, or use null for the unassigned-storage bytes",
+              ),
+            )
+          }
+        _ => ()
+      }
+    _ => ()
+  }
   match pic.category {
     National => {
       // NATIONAL is UTF-16BE; PIC N counts UTF-16 code units, not scalar values.
