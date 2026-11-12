@@ -53,9 +53,12 @@ test "stale tail snapshot: decode leaves a 2-byte hole when one view fails" {
   let text = pv_decode_record(
     bs([0xC1, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xFF, 0xEE]),
   )
+  // **契约变更（B1，2026-11-12）**：decode 的 JSONL 现在同时带出空洞区间
+  // `__tail_gap`，供 encode 端按绝对位置映射（N4 只修了「当前空洞为空」一档）。
+  // 这是输出格式的扩展，不是测试被削弱。
   inspect(
     text,
-    content="{\"R.M\":\"ABCD\",\"R.V2\":\"ABCDEF\",\"R.V3\":null,\"__tail_hex\":\"ffee\"}\n",
+    content="{\"R.M\":\"ABCD\",\"R.V2\":\"ABCDEF\",\"R.V3\":null,\"__tail_hex\":\"ffee\",\"__tail_gap\":[[6,8]]}\n",
   )
 }
 

@@ -222,7 +222,8 @@ BLANK WHEN ZERO 用于基本数值/编辑数值项）；旧实现静默丢弃、
 的字节重叠（`REDEFINES` 只能重新描述它自己那段存储）。违反时报
 `InvalidLayout` 并点名视图与相撞的字段。视图**短于**目标（部分重定义）、
 视图**长于**目标但超出部分只落在记录尾部空洞（字节由 `__tail_hex` /
-`__filler_hex` 保真）、01 层之外的正常重定义组都仍然受支持。
+`__filler_hex` 携带，区间由配套的 `__tail_gap` / `__filler_gap` 携带，见
+[FIDELITY.md](FIDELITY.md) 第 3 节）、01 层之外的正常重定义组都仍然受支持。
 不做「必须紧邻前项」的校验：重定义链（`D REDEFINES A REDEFINES B`）合法且
 复杂，收益小于风险。
 

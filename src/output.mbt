@@ -103,10 +103,32 @@ fn hex_lower(v : Int32) -> String {
 }
 
 ///|
+/// 空洞区间 → JSON 数组 `[[start, end], ...]`（B1，2026-11-12）。
+///
+/// 与 `__tail_hex` / `__filler_hex` 成对写出：字节序列本身说明「是什么」，
+/// 区间说明「在哪里」。encode 端按区间做绝对位置映射，才能处理「部分视图
+/// 解出 + 编辑」的任意形态——只带字节序列时，长度只能证明字节数对，证明
+/// 不了位置对；快照长度恰好等于超集长度时会静默写到错误偏移上。
+fn gap_intervals_json(gaps : Array[(Int32, Int32)]) -> Json {
+  let arr : Array[Json] = []
+  for (s, e) in gaps {
+    arr.push(
+      Json::array([
+        Json::number(s.to_double(), repr=s.to_string()),
+        Json::number(e.to_double(), repr=e.to_string()),
+      ]),
+    )
+  }
+  Json::array(arr)
+}
+
+///|
 /// 计算一条记录里「只有重定义视图覆盖」的**尾部**字节区间（所有主视图字段
 /// 结束之后、记录长度之前的部分，见 encode 层 `primary_tail_gaps`），并从
 /// `row` 携带的原始记录字节（`__record_bytes`，由宽容解码在布局存在尾部
 /// 空洞时写入）中取出这段字节，渲染为小写十六进制串。
+///
+/// **同时返回区间几何**（B1）：只有字节序列时 encode 无法把快照映射回原偏移。
 ///
 /// 返回 `None` 的情形：没有尾部空洞 / 空洞字节全为 0x40（未赋值工作存储区
 /// 惯例，不携带信息）/ 没有原始字节信息（手写 JSON、非 decode 来源——
@@ -115,7 +137,7 @@ fn hex_lower(v : Int32) -> String {
 fn layout_tail_gap_bytes(
   layout : RecordLayout,
   row : Map[String, CellValue],
-) -> String? {
+) -> (String, Array[(Int32, Int32)])? {
   // 用真实行值判定空洞（CB-16）：值为非 Null 的视图会把自己那段字节写好，
   // 那段就**不是**空洞，不能把原始字节当旁路信息带出去（否则编码时回填会
   // 覆盖视图的值，编辑被静默丢弃）。
@@ -152,7 +174,7 @@ fn layout_tail_gap_bytes(
   if !any || uniform_space {
     return None
   }
-  Some(sb.to_string())
+  Some((sb.to_string(), gaps))
 }
 
 ///|
@@ -160,10 +182,11 @@ fn layout_tail_gap_bytes(
 /// 任何字段，decode 结果里没有承载，JSONL 必须把它带出去才能字节保真。
 /// 与 layout_tail_gap_bytes 同一手法：区间并集 → 从 `__record_bytes`
 /// 取字节 → 小写十六进制；全 0x40（未赋值工作存储区惯例）不携带。
+/// **同时返回区间几何**（B1），理由同上。
 fn layout_filler_gap_bytes(
   layout : RecordLayout,
   row : Map[String, CellValue],
-) -> String? {
+) -> (String, Array[(Int32, Int32)])? {
   // 同上（CB-16）：按真实行值算空洞 —— 视图非 Null 时它那段不是空洞。
   let gaps = filler_gaps(layout, Some(row))
   if gaps.length() == 0 {
@@ -196,7 +219,7 @@ fn layout_filler_gap_bytes(
   if !any || uniform_space {
     return None
   }
-  Some(sb.to_string())
+  Some((sb.to_string(), gaps))
 }
 
 ///|
@@ -303,8 +326,12 @@ pub fn render_jsonl(
     // encode 前由 parse_jsonl_row 还原。全 0x40（未赋值工作存储区惯例）不携带
     // 信息，跳过——普通记录的 JSONL 输出保持不变。
     let tail = layout_tail_gap_bytes(layout, row)
-    if tail is Some(hex) {
+    if tail is Some((hex, gaps)) {
       obj["__tail_hex"] = Json::string(hex)
+      // **几何旁路**（B1，2026-11-12）：光有字节序列，encode 只能比长度，比
+      // 不了位置——快照长度恰好等于超集长度时会被摊到错误偏移上（静默错位），
+      // 落在两者之间时又直接报错。区间把「在哪里」一起带出去。
+      obj["__tail_gap"] = gap_intervals_json(gaps)
     }
     // **中部空洞旁路**（P1-2）：FILLER 占字节但不进输出（布局层契约），
     // 这段字节在字段值里没有载体，重编码时会被 Writer 初始的 0x40 静默
@@ -313,8 +340,9 @@ pub fn render_jsonl(
     // parse_jsonl_row / encode_record 回填。全 0x40 不携带——普通记录
     // （无 FILLER 或 FILLER 全空格）的 JSONL 输出保持不变。
     let filler = layout_filler_gap_bytes(layout, row)
-    if filler is Some(hex) {
+    if filler is Some((hex, gaps)) {
       obj["__filler_hex"] = Json::string(hex)
+      obj["__filler_gap"] = gap_intervals_json(gaps)
     }
     sb.write_string(Json::object(obj).stringify())
     sb.write_char('\n')

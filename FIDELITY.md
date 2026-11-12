@@ -104,8 +104,8 @@ IBM HFP 没有 IEEE 那种「负零是特殊值」的语义，但**符号位仍�
 | 浮点格式（HFP / IEEE） | `RecordLayout.float_mode` | 数值完全错误 |
 | 字段宽度与偏移 | `FieldLayout`（布局层算出） | 记录错位 |
 | `FILLER` 占位 | 布局层推进游标，但不进输出 | 后续字段全部偏移错 |
-| **REDEFINES 尾部空洞**（只有重定义视图覆盖、且该视图解不出的字节） | `__tail_hex`（JSONL 旁路）/ `__record_bytes`（内存路径） | `FF EE` 被静默改写成 `40 40` |
-| **FILLER 中部空洞**（FILLER 区与叶子字段之间的裂缝） | `__filler_hex`（JSONL 旁路）/ `__record_bytes`（内存路径） | `C3 C4` 被静默改写成 `40 40` |
+| **REDEFINES 尾部空洞**（只有重定义视图覆盖、且该视图解不出的字节） | `__tail_hex` + `__tail_gap`（JSONL 旁路）/ `__record_bytes`（内存路径） | `FF EE` 被静默改写成 `40 40`；或编辑后快照被写到错误偏移 |
+| **FILLER 中部空洞**（FILLER 区与叶子字段之间的裂缝） | `__filler_hex` + `__filler_gap`（JSONL 旁路）/ `__record_bytes`（内存路径） | `C3 C4` 被静默改写成 `40 40` |
 | **`JUSTIFIED RIGHT` 的对齐方向** | `PicClause.justified_right` | 右对齐字段被写成左对齐：`"AB"` 落盘成 `C1 C2 40 40 40`（应 `40 40 40 C1 C2`），主机读出的值变成 `"AB   "` |
 
 **负零为什么单独列一行**：整数型的 `0` 与 `-0` 数值相等，但 zoned / packed 的符号半字节不同，字节也就不同。走 `decode → JSONL → encode` 时，文本这一环靠不住——JSON 的数字是 double，`-0` 经核心 JSON 词法后原文不保留，放手写的 `-0` 也可能被折叠成 `0`。所以 **JSONL 里的 `__nibbles.sign` 是符号的权威来源**：`0xD` 就是负号，系数为 0 时同样生效。修复前这条旁路只被当作"写回哪个半字节"的提示，`decode` 出 `-0`、`encode` 回 `+0`，而 `verify`（内存路径，`Decimal.negative` 没丢）还报 `byte-identical roundtrip` —— 两条路径互相矛盾。回归测试在 `src/negative_zero_test.mbt`，同时锁定文本链路与 `verify` 两条路径的结论一致。
@@ -125,12 +125,20 @@ IBM HFP 没有 IEEE 那种「负零是特殊值」的语义，但**符号位仍�
 `decode → JSONL → encode` 静默改字节，并让 `verify` 报 mismatch。
 回归：`src/blank_when_zero_zero_form_test.mbt`。
 
-**视图编辑与尾部/中部空洞旁路**：`__tail_hex` / `__filler_hex` 是 decode
-时的快照。用户把解不出的 REDEFINES 视图从 `null` 改成具体值后，空洞收缩，
-快照中对应位置的字节必须让位于编辑（只回填当前仍是空洞的位置），不能
-因为长度不等于当前空洞就失败。长度既不等于当前空洞、也不等于「全视图
-不写」的超集空洞时，仍按损坏报 `InvalidBypass`。回归：
-`src/jsonl_bypass_edit_test.mbt`。
+**视图编辑与空洞几何旁路**：`__tail_hex` / `__filler_hex` 是 decode 时的
+字节快照，配套的 `__tail_gap` / `__filler_gap` 是这些字节**原来在记录的哪个
+区间**（`[[6,10]]`，左闭右开）。带几何时 encode 按绝对位置映射：只回填当前
+仍是空洞的位置，已被字段值覆盖的位置丢弃（编辑优先）。
+
+只有字节、没有几何（2026-11-12 之前的 JSONL）时行为不变，但能力有限：长度
+既不等于当前空洞、也不等于「全视图不写」的超集空洞时，按损坏报
+`InvalidBypass`；而长度恰好等于超集长度时，快照会按超集起点摊开——快照当初
+只覆盖后半段的话，字节就被写到错误偏移上（静默错位，B1 之前存在）。带几何
+的行没有这个问题。
+
+回归：`src/jsonl_bypass_edit_test.mbt`（视图编辑优先）、
+`src/jsonl_gap_geometry_test.mbt`（几何：decode 写出区间、两种编辑形态、
+旧 JSONL 行为不变、损坏几何报错）。
 
 `FILLER` 那条值得单独说：它**占字节但不产值**，所以解码结果里没有它。字节保真由两条旁路承载（P1-2 修复后）：`verify`（内存路径）通过宽容解码附带的 `__record_bytes` 把 FILLER 区原样写回；`decode → JSONL → encode` 路径通过 `__filler_hex`（中部 FILLER 区，与 `__tail_hex` 同一手法，全 `0x40` 空格填充不携带）把这段字节带回编码器。JSONL 输出里仍然**不出现** FILLER 字段——旁路键是保留键，不是字段。
 
@@ -199,7 +207,7 @@ IBM HFP 的 `COMP-2` 尾数是 **56 位**，比 IEEE `Double` 的 53 位多 3 �
 
 ### 5.5 REDEFINES 尾部空洞
 
-重定义视图可以比主视图长（布局层把记录延长到 `max(主视图, 视图)`）。超出主视图的字节只有重定义视图覆盖；当该视图解不出（置 `Null`）时，这些字节由 `__tail_hex` 旁路携带：`render_jsonl` 以小写十六进制写出（全 `0x40` 空格填充除外——那是「未赋值工作存储区」惯例），`parse_jsonl_row` / `encode_record` 按空洞区间原样回填。主视图字段之间的**中部**空洞（FILLER、手工布局裂缝）由 `__filler_hex` 旁路按同一规则携带（P1-2），见第 3 节 FILLER 说明。
+重定义视图可以比主视图长（布局层把记录延长到 `max(主视图, 视图)`）。超出主视图的字节只有重定义视图覆盖；当该视图解不出（置 `Null`）时，这些字节由 `__tail_hex` 旁路携带：`render_jsonl` 以小写十六进制写出（全 `0x40` 空格填充除外——那是「未赋值工作存储区」惯例），并把区间写进 `__tail_gap`；`parse_jsonl_row` / `encode_record` 按区间做绝对位置回填（没有区间时退化为 2026-11-12 之前的长度匹配行为）。主视图字段之间的**中部**空洞（FILLER、手工布局裂缝）由 `__filler_hex` + `__filler_gap` 按同一规则携带（P1-2），见第 3 节 FILLER 说明。
 
 
 ## 6. 怎么自己验证

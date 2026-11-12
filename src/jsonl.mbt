@@ -542,6 +542,20 @@ pub fn parse_jsonl_row(
         Some(_) => return Err("__tail_hex must be a hex string")
         None => ()
       }
+      // **空洞几何旁路**（B1，2026-11-12）：`__tail_gap` / `__filler_gap`
+      // 写出空洞的**区间**，让 encode 能按绝对位置映射快照（只带字节序列时
+      // 长度只能证明字节数对，证明不了位置对）。规范成 `"6:10;4:6"` 存进
+      // 行映射 —— `CellValue` 没有区间变体，encode 端按同一格式还原。
+      for key in ["__tail_gap", "__filler_gap"] {
+        match obj.get(key) {
+          None => ()
+          Some(j) =>
+            match parse_gap_intervals(key, j, layout.byte_length) {
+              Ok(spec) => out[key] = Text(spec)
+              Err(e) => return Err(e)
+            }
+        }
+      }
       // 中部空洞旁路（P1-2）：render_jsonl 写出的 `__filler_hex` 在这里
       // 还原成 Bytes，由 encode_record 在写完全部字段后回填 FILLER 区。
       // 没有这个键时行为与旧版完全一致。
@@ -567,6 +581,80 @@ pub fn parse_jsonl_row(
       Ok(out)
     }
     _ => Err("JSONL line must be an object")
+  }
+}
+
+///|
+/// 解析并校验空洞几何旁路键（B1，2026-11-12）：`"__tail_gap":[[6,10]]`。
+///
+/// 返回规范串 `"6:10"` / `"4:6;8:10"`，encode 端按同一格式还原区间。
+///
+/// 校验三条：每项必须是 `[start, end]` 二元数组、两个偏移都是
+/// `0..=byte_length` 内的整数、`start < end`。损坏必须报错而不是静默丢弃 ——
+/// 与 `__tail_hex` / `__filler_hex` 同族（NEW-6）：这些键只来自 decode 的
+/// 输出或蓄意构造，报错没有误伤面。**没有这个键时行为与旧版完全一致**，
+/// 这是旧 JSONL 迁移的前提。
+fn parse_gap_intervals(
+  key : String,
+  j : Json,
+  byte_length : Int32,
+) -> Result[String, String] {
+  match j {
+    Json::Array(items) => {
+      let parts : Array[String] = []
+      for it in items {
+        match it {
+          Json::Array(pair) => {
+            if pair.length() != 2 {
+              return Err(
+                "\{key} entries must be [start, end] pairs, got \{pair.length()} element(s)",
+              )
+            }
+            let vals : Array[Int32] = []
+            for p in pair {
+              match p {
+                Json::Number(v, repr~) => {
+                  let vi = v.to_int64()
+                  if vi.to_double() != v ||
+                    vi < 0L ||
+                    vi > byte_length.to_int64() {
+                    let shown = match repr {
+                      Some(r) => r
+                      None => v.to_string()
+                    }
+                    return Err(
+                      "\{key} offsets must be integers in 0..=\{byte_length}, got \{shown}",
+                    )
+                  }
+                  vals.push(vi.to_int())
+                }
+                other =>
+                  return Err(
+                    "\{key} offsets must be numbers, got \{json_kind_name(other)}",
+                  )
+              }
+            }
+            let s = vals[0]
+            let e = vals[1]
+            if s >= e {
+              return Err(
+                "\{key} interval [\{s}, \{e}) must be non-empty (start < end)",
+              )
+            }
+            parts.push(s.to_string() + ":" + e.to_string())
+          }
+          other =>
+            return Err(
+              "\{key} must be an array of [start, end] pairs, got \{json_kind_name(other)}",
+            )
+        }
+      }
+      Ok(parts.join(";"))
+    }
+    other =>
+      Err(
+        "\{key} must be an array of [start, end] pairs, got \{json_kind_name(other)}",
+      )
   }
 }
 

@@ -28,8 +28,13 @@ test "redefines tail: raw bytes beyond the primary view survive the JSONL roundt
   }
   assert_true(row.get("R.A.RAW") is Some(Null))
   // 2) JSONL 往返：尾部字节必须原样回到位置 2..3（render_jsonl 行尾带 \n）
+  //
+  // **契约变更（B1，2026-11-12）**：`render_jsonl` 现在同时写出空洞区间
+  // `__tail_gap`（`[[2,4]]` 表示 [2,4) 这两个字节属于尾部空洞），encode 端按
+  // 绝对位置回填。这是输出格式的扩展，不是测试被削弱——本用例照旧逐字节
+  // 比对 `encoded == record`，只是精确文本多了一个键。
   let jsonl_text = render_jsonl(layout, [row])
-  let expected = "{\"R.M\":123,\"R.A.RAW\":null,\"__nibbles\":{\"R.M\":{\"sign\":12}},\"__tail_hex\":\"ffee\"}"
+  let expected = "{\"R.M\":123,\"R.A.RAW\":null,\"__nibbles\":{\"R.M\":{\"sign\":12}},\"__tail_hex\":\"ffee\",\"__tail_gap\":[[2,4]]}"
   assert_true(jsonl_text == expected + "\n")
   let parsed = parse_jsonl_row(layout, jsonl_text).unwrap()
   let encoded = encode_record(layout, parsed).unwrap()

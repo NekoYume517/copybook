@@ -1087,6 +1087,91 @@ fn restore_from_superset(
 }
 
 ///|
+/// 非负十进制串 → Int32（只服务空洞几何的规范串，不接符号/指数）。
+fn parse_gap_offset(text : String) -> Int32? {
+  let cs = text.to_array()
+  if cs.length() == 0 {
+    return None
+  }
+  let mut v = 0
+  for c in cs {
+    if c < '0' || c > '9' {
+      return None
+    }
+    v = v * 10 + (c.to_int() - '0'.to_int())
+  }
+  Some(v)
+}
+
+///|
+/// 空洞几何的规范串（`"6:10;4:6"`，由 `parse_jsonl_row` 从 `__tail_gap` /
+/// `__filler_gap` 数组校验后生成）→ 区间数组。格式不符返回 `None`。
+fn gap_spec_ranges(spec : String) -> Array[(Int32, Int32)]? {
+  let out : Array[(Int32, Int32)] = []
+  for part in spec.split(";") {
+    match part.to_string().split_once(":") {
+      None => return None
+      Some((a, b)) =>
+        match
+          (parse_gap_offset(a.to_string()), parse_gap_offset(b.to_string())) {
+          (Some(s), Some(e)) => out.push((s, e))
+          _ => return None
+        }
+    }
+  }
+  Some(out)
+}
+
+///|
+/// `spec` 里每个区间是否都完整落在 `sup`（「全视图不写」时的超集空洞）内。
+///
+/// 几何旁路只允许回填**尾部/中部空洞超集**里的字节：手写一个落在主视图区
+/// 的区间（如 `[[0,4]]`）就是在往字段值上写原始字节，必须拒绝。
+fn gaps_within(
+  spec : Array[(Int32, Int32)],
+  sup : Array[(Int32, Int32)],
+) -> Bool {
+  for (s, e) in spec {
+    let mut ok = false
+    for (ss, se) in sup {
+      if s >= ss && e <= se {
+        ok = true
+      }
+    }
+    if !ok {
+      return false
+    }
+  }
+  true
+}
+
+///|
+/// 按**绝对位置**回填空洞快照（B1，2026-11-12 遗留项）：只有该位置此刻仍是
+/// 空洞时才写，已被字段值覆盖的位置把对应字节**丢弃**（编辑优先）。
+///
+/// 这是 `restore`（按空洞顺序消费字节）与 `restore_from_superset`（按超集
+/// 起点摊开）之外的第三条路：几何由渲染端一起带出，位置不再靠猜。
+/// `bs` 长度已由调用方校验为各区间总长。
+fn restore_at_gaps(
+  w : Writer,
+  spec : Array[(Int32, Int32)],
+  cur : Array[(Int32, Int32)],
+  bs : Bytes,
+) -> Unit {
+  let mut idx = 0
+  for (s, e) in spec {
+    let mut p = s
+    while p < e {
+      if gap_has(cur, p) {
+        w.set(p, bs[idx].to_int())
+      }
+      idx = idx + 1
+      p = p + 1
+    }
+  }
+}
+
+///|
 /// 编码一条记录。
 ///
 /// 缺失的字段按 `Null` 处理：
@@ -1203,67 +1288,152 @@ pub fn encode_record(
         }
         n
       }
+      // **几何旁路优先**（B1，2026-11-12 遗留项）：渲染端把空洞区间一起带出时，
+      // 快照按**绝对位置**映射，不再靠长度猜位置。`values` 里的值只可能是
+      // `parse_jsonl_row` 生成的 `Text` 规范串（`"6:10;4:6"`）。
+      let tail_spec : Array[(Int32, Int32)]? = match values.get("__tail_gap") {
+        Some(Text(s)) => gap_spec_ranges(s)
+        Some(_) => None
+        None => None
+      }
+      let has_tail_gap = match values.get("__tail_gap") {
+        Some(_) => true
+        None => false
+      }
+      if has_tail_gap && tail_spec is None {
+        return Err(InvalidBypass("__tail_gap is malformed"))
+      }
       match values.get("__tail_hex") {
-        Some(Bytes(bs)) => {
-          let gaps = primary_tail_gaps(layout, Some(values))
-          let need = gap_total(gaps)
-          if bs.length() == need {
-            restore(gaps, bs, false)
-          } else if need == 0 {
-            // **空洞已经被字段值全覆盖 = 快照整条被编辑取代**（2026-11-12
-            // 审计，HANDOVER 16.5 遗留第 2 条）：快照字节全部落在尾部区间
-            // `[主视图结束偏移, byte_length)` 内，而这段区间此刻每个字节都
-            // 由某个字段写出 —— 快照指向的位置全部被覆盖，没有任何字节需要
-            // 回填。丢弃它不会丢信息，这是唯一不靠额外元数据也能证明安全的
-            // 形态（其余长度含混的情形按 CB-A2 继续报错）。
-            //
-            // 触发形态（decode 多视图、只有一个视图解不出）：
-            //   05 M X(4). 05 V2 REDEFINES M X(6). 05 V3 REDEFINES M X(8).
-            //   记录 C1..C6 FF EE -> {"R.V3":null,"__tail_hex":"ffee"}
-            //   用户把 V3 改成 "ABCDEFGH" -> 旧实现在这里 exit 1
-            //   `__tail_hex must be exactly 0 byte(s) ... got 2`。
-            ()
-          } else {
-            // 编辑视图导致空洞收缩时，快照的长度对应「全视图不写」的超集。
-            // 只回填当前仍是空洞的位置（编辑优先）；其它长度按 CB-A2 报错。
-            let sup = primary_tail_gaps(layout, None)
-            if bs.length() == gap_total(sup) {
-              restore_from_superset(w, sup, gaps, bs)
-            } else {
-              return Err(
-                InvalidBypass(
-                  "__tail_hex must be exactly \{need} byte(s) for this record's tail gap(s), got \{bs.length()}",
-                ),
+        Some(Bytes(bs)) =>
+          match tail_spec {
+            Some(spec) => {
+              let sup = primary_tail_gaps(layout, None)
+              if gap_total(spec) != bs.length() {
+                return Err(
+                  InvalidBypass(
+                    "__tail_gap covers \{gap_total(spec)} byte(s) but __tail_hex carries \{bs.length()}",
+                  ),
+                )
+              }
+              if !gaps_within(spec, sup) {
+                return Err(
+                  InvalidBypass(
+                    "__tail_gap must lie inside this record's tail gap(s)",
+                  ),
+                )
+              }
+              restore_at_gaps(
+                w,
+                spec,
+                primary_tail_gaps(layout, Some(values)),
+                bs,
               )
             }
+            None => {
+              // 旧 JSONL（没有 `__tail_gap`）：与 B1 之前**逐字一致**的三条分支，
+              // 这是旧文件迁移的前提（不猜位置、不做静默修补）。
+              let gaps = primary_tail_gaps(layout, Some(values))
+              let need = gap_total(gaps)
+              if bs.length() == need {
+                restore(gaps, bs, false)
+              } else if need == 0 {
+                // **空洞已经被字段值全覆盖 = 快照整条被编辑取代**（2026-11-12
+                // 审计，HANDOVER 16.5 遗留第 2 条）：快照字节全部落在尾部区间
+                // `[主视图结束偏移, byte_length)` 内，而这段区间此刻每个字节都
+                // 由某个字段写出 —— 快照指向的位置全部被覆盖，没有任何字节需要
+                // 回填。丢弃它不会丢信息。
+                ()
+              } else {
+                // 编辑视图导致空洞收缩时，快照的长度对应「全视图不写」的超集。
+                // 只回填当前仍是空洞的位置（编辑优先）；其它长度按 CB-A2 报错。
+                let sup = primary_tail_gaps(layout, None)
+                if bs.length() == gap_total(sup) {
+                  restore_from_superset(w, sup, gaps, bs)
+                } else {
+                  return Err(
+                    InvalidBypass(
+                      "__tail_hex must be exactly \{need} byte(s) for this record's tail gap(s), got \{bs.length()}",
+                    ),
+                  )
+                }
+              }
+            }
           }
-        }
-        _ => ()
+        _ =>
+          if has_tail_gap {
+            return Err(
+              InvalidBypass(
+                "__tail_gap requires __tail_hex (the intervals alone carry no bytes)",
+              ),
+            )
+          }
+      }
+      let filler_spec : Array[(Int32, Int32)]? = match
+        values.get("__filler_gap") {
+        Some(Text(s)) => gap_spec_ranges(s)
+        Some(_) => None
+        None => None
+      }
+      let has_filler_gap = match values.get("__filler_gap") {
+        Some(_) => true
+        None => false
+      }
+      if has_filler_gap && filler_spec is None {
+        return Err(InvalidBypass("__filler_gap is malformed"))
       }
       match values.get("__filler_hex") {
-        Some(Bytes(bs)) => {
-          let gaps = filler_gaps(layout, Some(values))
-          let need = gap_total(gaps)
-          if bs.length() == need {
-            restore(gaps, bs, false)
-          } else if need == 0 {
-            // 与 `__tail_hex` 同一规则：中部空洞被字段值全覆盖时，快照整体
-            // 是过时快照，丢弃不会丢信息。
-            ()
-          } else {
-            let sup = filler_gaps(layout, None)
-            if bs.length() == gap_total(sup) {
-              restore_from_superset(w, sup, gaps, bs)
-            } else {
-              return Err(
-                InvalidBypass(
-                  "__filler_hex must be exactly \{need} byte(s) for this record's FILLER gap(s), got \{bs.length()}",
-                ),
-              )
+        Some(Bytes(bs)) =>
+          match filler_spec {
+            Some(spec) => {
+              let sup = filler_gaps(layout, None)
+              if gap_total(spec) != bs.length() {
+                return Err(
+                  InvalidBypass(
+                    "__filler_gap covers \{gap_total(spec)} byte(s) but __filler_hex carries \{bs.length()}",
+                  ),
+                )
+              }
+              if !gaps_within(spec, sup) {
+                return Err(
+                  InvalidBypass(
+                    "__filler_gap must lie inside this record's FILLER gap(s)",
+                  ),
+                )
+              }
+              restore_at_gaps(w, spec, filler_gaps(layout, Some(values)), bs)
+            }
+            None => {
+              // 旧 JSONL（没有 `__filler_gap`）：与 B1 之前逐字一致。
+              let gaps = filler_gaps(layout, Some(values))
+              let need = gap_total(gaps)
+              if bs.length() == need {
+                restore(gaps, bs, false)
+              } else if need == 0 {
+                // 与 `__tail_hex` 同一规则：中部空洞被字段值全覆盖时，快照整体
+                // 是过时快照，丢弃不会丢信息。
+                ()
+              } else {
+                let sup = filler_gaps(layout, None)
+                if bs.length() == gap_total(sup) {
+                  restore_from_superset(w, sup, gaps, bs)
+                } else {
+                  return Err(
+                    InvalidBypass(
+                      "__filler_hex must be exactly \{need} byte(s) for this record's FILLER gap(s), got \{bs.length()}",
+                    ),
+                  )
+                }
+              }
             }
           }
-        }
-        _ => ()
+        _ =>
+          if has_filler_gap {
+            return Err(
+              InvalidBypass(
+                "__filler_gap requires __filler_hex (the intervals alone carry no bytes)",
+              ),
+            )
+          }
       }
     }
   }
