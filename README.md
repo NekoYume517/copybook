@@ -258,6 +258,11 @@ EBCDIC 使用 **cp037**（US/Canada）。ASCII 与 EBCDIC 的数字位置完全�
 规则手工插入填充字段（或等本实现支持对齐）。回归测试：
 `src/sync_clause_test.mbt`。
 
+`SYNC` 写在**组项**上等价于写在组内每个基本项上（IBM 的组级
+`SYNCHRONIZED` 语义），因此组内每个基本项都会各自被标注、汇总数按基本项
+计（2026-11-13 审计：旧实现只把标志留在组项上，而组项不进 `layout.fields`，
+组级 `SYNC` 因此一个字都不提）。回归测试：`src/group_sync_inherit_test.mbt`。
+
 ## 设计要点
 
 **绝不静默修正。** 遇到非法 EBCDIC 字节、越界字段、长度不匹配，返回带偏移量的显式错误，而不是猜一个值。

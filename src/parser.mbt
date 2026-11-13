@@ -480,7 +480,7 @@ fn parse_program(p : ParserState) -> Array[FieldSpec] raise ParseError {
   // FieldSpec 时完成，自上而下把 inherited usage 传进去。
   // 优先级：自身显式声明 > 上层继承；无法区分「显式 USAGE DISPLAY」与
   // 「默认 DISPLAY」时按 IBM 编译器的行为，组声明优先。
-  let (roots, _) = build_children(flat, 0, 0, None, None)
+  let (roots, _) = build_children(flat, 0, 0, None, None, false)
   roots
 }
 
@@ -525,6 +525,7 @@ fn build_children(
   parent_level : Int32,
   inherited_usage : Usage?,
   inherited_sign : (Bool, Bool)?,
+  inherited_sync : Bool,
 ) -> (Array[FieldSpec], Int32) raise ParseError {
   let out : Array[FieldSpec] = []
   let mut i = start
@@ -552,7 +553,21 @@ fn build_children(
       Some(s) => Some(s)
       None => inherited_sign
     }
-    let (kids, next_i) = build_children(flat, i, e.level, down, down_sign)
+    // 组级 SYNC 下传（2026-11-13 审计）：IBM 的 `SYNCHRONIZED` 写在组项上时
+    // **等价于写在组内每个基本项上**。旧实现只把标志留在组项自己身上（组项
+    // 不进 `layout.fields`），叶子因此拿不到任何信号：`05 G SYNC. + 10 A
+    // PIC S9(4) COMP.` 的 `layout` 报告一个字都不提，而同一份 copybook 把
+    // SYNC 写在叶子上就会逐行标注 —— README 承诺「对每个 SYNC 字段逐行标注，
+    // 并在末尾汇总警告」，组级写法落空。与组级 USAGE/SIGN 同一手法向下 OR。
+    let down_sync = e.is_synced || inherited_sync
+    let (kids, next_i) = build_children(
+      flat,
+      i,
+      e.level,
+      down,
+      down_sign,
+      down_sync,
+    )
     i = next_i
     // 77 是**独立项**（standalone item）：COBOL 规定它只能是顶层项，
     // 不参与层级号建树、不能挂在任何组里（CB-B11，2026-11-10 审计）。
@@ -638,7 +653,8 @@ fn build_children(
       children: kids,
       line: e.line,
       group_usage: e.group_usage,
-      is_synced: e.is_synced,
+      // 组级 SYNC 已向下 OR 进本项（见上面的 down_sync），两者取并。
+      is_synced: e.is_synced || inherited_sync,
     })
   }
   (out, i)
