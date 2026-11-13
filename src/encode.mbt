@@ -1204,6 +1204,46 @@ fn restore_at_gaps(
 }
 
 ///|
+/// 区间数组是否升序且互不相交。
+///
+/// `complement_gaps` 产出的恒为**极大不相交**区间（升序、互不重叠），所以
+/// 非规范的几何只可能来自损坏或手写。重叠区间尤其危险：`gap_total` 会把
+/// 同一段字节数两遍，`__tail_hex` / `__filler_hex` 的字节被错位消费，
+/// 而剩下的真实空洞被静默填成 0x40（2026-11-13 审计）。
+fn gap_spec_canonical(spec : Array[(Int32, Int32)]) -> Bool {
+  let mut prev_end = -1
+  for (s, e) in spec {
+    if s < prev_end {
+      return false
+    }
+    prev_end = e
+  }
+  true
+}
+
+///|
+/// 尾部空洞恒为记录的**一个后缀**：`[max(写者结束), byte_length)`。
+///
+/// 尾部区间 `[主视图结束, byte_length)` 里写字节的只有重定义视图，而视图
+/// 都从自己目标的起点开始（即只覆盖该区间的前缀），所以空洞恒等于
+/// `[max(写者结束), byte_length)` —— 单个结束于记录末尾的区间。几何不满足
+/// 这一条就不可能是 decode 的输出：把快照与几何一起截断后，剩下的空洞会被
+/// 静默填成 0x40，而 B1 之前这种形态是报 `__tail_hex must be exactly N`
+/// 的（2026-11-13 审计）。
+fn tail_spec_reaches_record_end(
+  spec : Array[(Int32, Int32)],
+  byte_length : Int32,
+) -> Bool {
+  match spec.length() {
+    0 => false
+    n =>
+      match spec[n - 1] {
+        (_, e) => e == byte_length
+      }
+  }
+}
+
+///|
 /// 编码一条记录。
 ///
 /// 缺失的字段按 `Null` 处理：
@@ -1354,6 +1394,25 @@ pub fn encode_record(
                   ),
                 )
               }
+              // **几何必须是 decode 可能的输出**（2026-11-13 审计）：
+              // 升序不相交 + 结束于记录末尾。两条都只拦「不可能是 decode
+              // 输出」的形态，B1 锁定的合法编辑（尾部收缩、前缀扩张）不受
+              // 影响；不拦的话，把快照与几何一起截断/重叠会让剩下的真实空洞
+              // 静默变 0x40，退出码仍是 0。
+              if !gap_spec_canonical(spec) {
+                return Err(
+                  InvalidBypass(
+                    "__tail_gap intervals must be strictly ascending and non-overlapping",
+                  ),
+                )
+              }
+              if !tail_spec_reaches_record_end(spec, layout.byte_length) {
+                return Err(
+                  InvalidBypass(
+                    "__tail_gap must end at the record end (offset \{layout.byte_length}): the tail gap of a record is always a suffix of it",
+                  ),
+                )
+              }
               restore_at_gaps(
                 w,
                 spec,
@@ -1429,6 +1488,16 @@ pub fn encode_record(
                 return Err(
                   InvalidBypass(
                     "__filler_gap must lie inside this record's FILLER gap(s)",
+                  ),
+                )
+              }
+              // 与 __tail_gap 同一条规范形态判据（升序不相交）。中部空洞
+              // 不收「必须结束于记录末尾」那条：FILLER 洞的两端由主视图
+              // 字段决定，可以停在中部（B1 的 shape 3 就是 [3,4)）。
+              if !gap_spec_canonical(spec) {
+                return Err(
+                  InvalidBypass(
+                    "__filler_gap intervals must be strictly ascending and non-overlapping",
                   ),
                 )
               }
