@@ -479,14 +479,26 @@ pub fn parse_jsonl_row(
               // （`PIC S9(3)` 的负零 = `F0 F0 D0`，COMP-3 的负零 = `00 0D`）。
               // 只处理 None/Null：其它非文本单元格（Int/Decimal/…）保持
               // 既有行为不动 —— 那才可能带着用户的编辑。
+              //
+              // **重定义视图的「没有值」不物化**（2026-11-13 审计）：视图的
+              // `null` 在契约里是「这一段我不写，字节由主视图决定」（API.md §6
+              // 的视图跳过 / A2 的 null 语义）。物化成一个负零数字就是**以视图
+              // 身份覆盖主视图的字节** —— `{"R.M":123,"R.V":null,
+              // "__nibbles":{"R.V":{"sign":13}}}` 修复前写出 `F0 F0 D0`，
+              // 主视图的 123 被静默改成 −0，exit 0、零提示。
+              //
+              // 旁路键在查找阶段已被 `nibbles.remove` 消费，因此这里跳过
+              // 不会落进末尾的键对账（不会报 "does not match any field"）。
               Some(Null) | None =>
-                out[field.path] = Decimal(Decimal::{
-                  coefficient: 0L,
-                  scale: field.pic.scale,
-                  negative: sn == Some(0xD),
-                  sign_nibble: sn,
-                  pad_nibble: pn,
-                })
+                if !field.is_redefining {
+                  out[field.path] = Decimal(Decimal::{
+                    coefficient: 0L,
+                    scale: field.pic.scale,
+                    negative: sn == Some(0xD),
+                    sign_nibble: sn,
+                    pad_nibble: pn,
+                  })
+                }
               _ => ()
             }
           }
