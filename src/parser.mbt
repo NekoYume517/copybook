@@ -947,6 +947,22 @@ fn parse_entry_clauses(
               "编辑型 PIC '\{pc.pic_text}' 不允许 SIGN ... SEPARATE：edited item 的符号位置由模式串自身表达（+ / - / CR / DB / S），不能再叠加独立的符号字节（IBM 规则）",
             )
           }
+        // **字符项上不能写 SIGN**（2026-11-13 审计）：COBOL 的 SIGN 子句只能
+        // 用于数值项 —— 符号要么覆盖末位区号、要么独占一个字节，字符项两者
+        // 都没有。旧实现照收，且 `pic_byte_length` 的 X/A 分支给
+        // `SIGN ... SEPARATE` 白加一个字节：`05 A PIC X(5) SIGN IS SEPARATE.`
+        // 报成 6 字节、其后每个字段整体推后一位（exit 0、零提示）。同一份
+        // 声明在 `N(3)` / `COMP` 上又不加，说明那个分支本身没有依据。
+        // 加字节是凭空发明存储、不加是声明被吞 —— 按「绝不静默修正」在
+        // 解析期点名拒绝（同 CB-B12 与组级 JUSTIFIED / BLANK WHEN ZERO）。
+        Alphabetic | Alphanumeric | National =>
+          if sign_declared {
+            raise SyntaxError(
+              pic_line,
+              1,
+              "字符项 PIC '\{pc.pic_text}' 不允许 SIGN 子句：SIGN 只能用于数值项（zoned 的符号覆盖末位区号，SIGN ... SEPARATE 独占一个符号字节）；字符项没有任何符号位置（IBM 规则）",
+            )
+          }
         _ => ()
       }
       let u = match explicit_usage {

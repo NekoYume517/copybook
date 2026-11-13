@@ -129,14 +129,12 @@ fn pic_byte_length(pic : PicClause) -> Int32 raise ParseError {
         raise InvalidLayout("PIC X/A: scale must be 0, got scale=\{pic.scale}")
       }
       match pic.usage {
-        Display => {
-          let base = pic.digits
-          if pic.sign_separate {
-            base + 1
-          } else {
-            base
-          }
-        }
+        // **字符项没有符号字节**（2026-11-13 审计）：旧实现在这里给
+        // `sign_separate` 加了 1 字节，于是 `PIC X(5) SIGN IS SEPARATE` 报成
+        // 6 字节、其后每个字段整体错位（而 N(3) / COMP 上又不加）。字符项
+        // 根本没有符号位置，解析层现已拒绝该子句；这里不再「凭声明加字节」，
+        // 保持「宽度只由字符数决定」这一条权威规则（手写 PicClause 亦然）。
+        Display => pic.digits
         _ =>
           raise InvalidLayout(
             "PIC X/A cannot use numeric USAGE (COMP/COMP-3/COMP-1/COMP-2)",

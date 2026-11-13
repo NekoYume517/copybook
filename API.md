@@ -169,8 +169,18 @@ pub fn RecordLayout::covered_bytes(self : RecordLayout) -> Int
 | `9(n)` | COMP-3 (无符号) | ceil((n + 1) / 2) |
 | `S9(n)V9(m)` | COMP-3 | ceil((n + m + 1) / 2) |
 | `N(n)` | NATIONAL (UTF-16BE) | n * 2（n 个 UTF-16 码元） |
-| 任意 | `SIGN ... SEPARATE` | +1 |
+| 数值（DISPLAY / zoned） | `SIGN ... SEPARATE` | +1 |
+| `COMP` / `COMP-3` / `COMP-1` / `COMP-2` | `SIGN ... SEPARATE` | +0（符号在表示内部，照 IBM 忽略该子句） |
+| 字符（`X` / `A` / `N`） | `SIGN` 任意写法 | **解析期拒绝**（字符项没有符号位置） |
 | 编辑型（`ZZ9.99` / `$9,999.99` / `9(5)CR`） | DISPLAY | 模式串展开后的**字符位置数**：`V` / `P` / `S` 不占（IBM PICTURE 符号表），插入字符 `$ , . + - / B 0 CR DB *` 各占 1 |
+
+> `SIGN` 子句的适用范围（2026-11-13 审计）：IBM 的 SIGN 子句只用于**数值项**。
+> 只有 zoned（DISPLAY 数值）会因此多出一个独立符号字节；`COMP` 族把符号
+> 编在表示内部，子句不产生字节。字符项（`X` / `A` / `N`）上写 SIGN 在解析期
+> 报 `SyntaxError` —— 旧实现给 `PIC X(5) SIGN IS SEPARATE` 白加了一个字节
+> （报成 6 字节、其后的字段整体错位、exit 0），这是**凭空发明存储**。
+> 回归：`src/sign_on_char_item_test.mbt`。编辑型的 `SIGN ... SEPARATE` 同样
+> 拒绝（CB-B12）。
 
 > 编辑型的两个解析期约束（2026-11-11 审计）：numeric-edited 的符号集
 > 是 `B P V Z 9 0 / , . + - CR DB * cs`，**没有 `S`**（`S` 只用于 numeric
