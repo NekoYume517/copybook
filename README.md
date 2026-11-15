@@ -178,7 +178,7 @@ copybook decode --copybook app.cpy --data app.dat --float-mode ieee
 | `COMP` / `COMP-4` 二进制 | ✅ |
 | `COMP-3` 打包十进制 | ✅ |
 | `COMP-1` / `COMP-2` 浮点 | ✅ 默认 IBM HFP；`--float-mode ieee` 切 IEEE 754 |
-| `OCCURS n TIMES` | ✅ |
+| `OCCURS n TIMES`（02..49 层） | ✅ 组级/叶级/ODO/嵌套展开；**01 / 77 层上的 OCCURS 解析期报错**（IBM IGYDS1063-E：OCCURS 不能用于 level-01/77；GnuCOBOL 的接受属方言扩展） |
 | `REDEFINES` | ✅ 视图必须与目标**同层同父**，且不得与其他字段的字节重叠（见下方限制） |
 | `SIGN ... SEPARATE` | ✅ 仅数值项：zoned 吃 +1 符号字节；`COMP` 族符号在表示内部（照 IBM 忽略子句、不加字节）；字符项/编辑型上写 `SIGN ... SEPARATE` 在解析期拒绝 |
 | 固定格式列 7 `-` 续行（`PIC` / `VALUE` 跨行） | ✅ 仅固定格式；自由格式没有续行符，行首 `-` 报错 |

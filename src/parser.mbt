@@ -452,6 +452,23 @@ fn parse_program(p : ParserState) -> Array[FieldSpec] raise ParseError {
     }
 
     let entry = parse_entry_clauses(p, name)
+    // **OCCURS 不允许出现在 01 / 77 层**（2026-11-15 审计）：IBM Enterprise
+    // COBOL 明确规定 OCCURS 不能用于 level-01（IGYDS1063-E「An "OCCURS"
+    // clause was found in the definition of a level-1 item」），level-77
+    // 同禁。旧实现静默接受并把记录展开成 n 份（长度 ×n、exit 0 零提示）
+    // —— 那是凭空发明一个 COBOL 不存在的存储声明，且「多份记录」的
+    // 选择语义在本实现里由「多个 01 并列拼接」承接，OCCURS 展开给出的是
+    // 另一种完全不同的布局。GnuCOBOL 默认接受 level-01 OCCURS 属方言
+    // 扩展（-std=ibm-strict 同拒）；本项目目标平台是 IBM z/OS，按 IBM
+    // 规则显式报错（与 INDEXED BY 的子集边界处理同族）。02..49 层的
+    // OCCURS（组级 / 叶级 / ODO / 嵌套展开）不受影响。
+    if (lvl == 1 || lvl == 77) && entry.saw_occurs {
+      raise SyntaxError(
+        start.line,
+        1,
+        "层级号 \{lvl} 的项 '\{name}' 不允许 OCCURS 子句：IBM COBOL 规定 OCCURS 不能用于 level-01 / level-77（IGYDS1063-E），表定义必须写在 02..49 层的数据项上",
+      )
+    }
     if entry.pic is Some(_) {
       last_elementary = name
     }
@@ -680,6 +697,11 @@ priv struct EntryClauses {
   sign_declared : Bool
   explicit_usage : Usage?
   is_synced : Bool
+  /// 是否写出了 OCCURS 子句（2026-11-15 审计）：默认值 occurs=1 与
+  /// 「显式 OCCURS 1 TIMES」在数值上不可区分，而 01/77 层的 OCCURS
+  /// 校验约束的是**子句本身**（IBM IGYDS1063-E），不是次数，所以需要
+  /// 独立标志。
+  saw_occurs : Bool
 }
 
 ///|
@@ -701,6 +723,8 @@ fn parse_entry_clauses(
   let mut sign_leading = false
   // 是否声明了 SYNC / SYNCHRONIZED（NEW-4：本子集不解对齐，只记录以便警告）
   let mut is_synced = false
+  // 是否写出了 OCCURS 子句（01/77 层校验约束子句本身，见 parse_program）
+  let mut saw_occurs = false
   // PIC 子句所在行（CB-B12 的报错定位用）。parse_entry_clauses 没有行号
   // 参数，这里就地记下唯一需要的那个位置。
   let mut pic_line = 0
@@ -798,6 +822,7 @@ fn parse_entry_clauses(
     // ---- OCCURS n [TO m] TIMES [DEPENDING ON x] ----
     if p.at_keyword("OCCURS") {
       let occ_tok = p.advance()
+      saw_occurs = true
       let first = expect_number(p, "OCCURS")
       occurs = first
       occurs_min = first
@@ -1070,6 +1095,7 @@ fn parse_entry_clauses(
     sign_declared,
     explicit_usage,
     is_synced,
+    saw_occurs,
   }
 }
 
