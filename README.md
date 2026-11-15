@@ -203,6 +203,16 @@ IBM「Symbols used in the PICTURE clause」计算 —— `V` / `P` / `S` 不占
 BLANK WHEN ZERO 用于基本数值/编辑数值项）；旧实现静默丢弃、声明不生效。
 组级 `USAGE` / `SIGN` 是合法继承，行为不变。
 
+**`BLANK WHEN ZERO` 在本实现中的生效范围是 DISPLAY 数值项（zoned）**
+（2026-11-15 审计）。IBM 允许把它写在 numeric-edited 上，但那层语义
+（「值为 0 时落盘全空格」）在编辑型上无法忠实实现：编辑型在本实现里是
+**纯文本路径**（decode → JSONL → encode 逐字节往返是硬承诺），若 encode
+把「文本恰为零」的行改写成全空格，decode 收下、encode 改写的字节就
+破坏了往返保真；要对成就得让 decode 拒收合法可打印的零形文本。因此
+编辑型上的 `BLANK WHEN ZERO` 被接受、**不产生任何效果**——已声明的
+限制（与「COMP 族上的 `SIGN` 被忽略」同族：IBM 语义在文本往返模型下
+没有忠实落点）。zoned 上的 BWZ 行为见 `src/blank_when_zero_test.mbt`。
+
 **`PIC N(n)` 的容量单位是 UTF-16 码元，不是「字符个数」**：`N(n)` 占 `2n` 字节，
 每个码元 2 字节，不足补 `00 20`（U+0020）。基本平面（BMP）字符占 1 码元，
 补充平面字符（emoji、少数字形复杂的汉字）在 UTF-16 里是**代理对，占 2 码元**：
