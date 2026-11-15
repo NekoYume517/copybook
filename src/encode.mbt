@@ -1222,24 +1222,31 @@ fn gap_spec_canonical(spec : Array[(Int32, Int32)]) -> Bool {
 }
 
 ///|
-/// 尾部空洞恒为记录的**一个后缀**：`[max(写者结束), byte_length)`。
+/// 尾部空洞恒为记录的**单个**后缀区间：`[max(写者结束), byte_length)`。
 ///
 /// 尾部区间 `[主视图结束, byte_length)` 里写字节的只有重定义视图，而视图
 /// 都从自己目标的起点开始（即只覆盖该区间的前缀），所以空洞恒等于
-/// `[max(写者结束), byte_length)` —— 单个结束于记录末尾的区间。几何不满足
-/// 这一条就不可能是 decode 的输出：把快照与几何一起截断后，剩下的空洞会被
-/// 静默填成 0x40，而 B1 之前这种形态是报 `__tail_hex must be exactly N`
-/// 的（2026-11-13 审计）。
+/// `[max(写者结束), byte_length)` —— **恰好一个**、结束于记录末尾的区间。
+/// 几何不满足这两条就不可能是 decode 的输出：
+///   - 不结束于记录末尾 ⇒ 把快照与几何一起截断后，剩下的空洞会被静默
+///     填成 0x40，而 B1 之前这种形态是报 `__tail_hex must be exactly N`
+///     的（2026-11-13 审计）；
+///   - **多于一个区间** ⇒ 即使升序、不相交、逐段都落在超集内，段与段之间
+///     的「中洞」（或本应由某一段覆盖的空隙）不在快照里，restore 时被
+///     静默填成 0x40（2026-11-15 审计：`[[6,7],[8,10]]` 三条既有判据全绿，
+///     第 7 字节被静默改成空格）。合法编辑只会让空洞从左端收缩，同样
+///     不会产出多区间几何。
 fn tail_spec_reaches_record_end(
   spec : Array[(Int32, Int32)],
   byte_length : Int32,
 ) -> Bool {
   match spec.length() {
-    0 => false
-    n =>
-      match spec[n - 1] {
+    // 恰好一个区间且结束于记录末尾（见上：decode 的输出形状）。
+    1 =>
+      match spec[0] {
         (_, e) => e == byte_length
       }
+    _ => false
   }
 }
 
@@ -1409,7 +1416,7 @@ pub fn encode_record(
               if !tail_spec_reaches_record_end(spec, layout.byte_length) {
                 return Err(
                   InvalidBypass(
-                    "__tail_gap must end at the record end (offset \{layout.byte_length}): the tail gap of a record is always a suffix of it",
+                    "__tail_gap must be a single interval ending at the record end (offset \{layout.byte_length}): the tail gap of a record is always one suffix interval [max(writer end), record length]",
                   ),
                 )
               }
