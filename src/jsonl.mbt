@@ -428,6 +428,24 @@ pub fn parse_jsonl_row(
                 }
               None => ()
             }
+            // **sign 13（D，负号）只能落在带符号字段上**（2026-11-15 审计）：
+            // 无符号字段的 decode 恒拒负号（decode_zoned / decode_packed 的
+            // unsigned 分支直接报 InvalidNumeric），sign=13 永远不是 decode
+            // 的输出。静默收下的两条下游都不对：无符号 zoned 会被 encode 的
+            // 「-0 归零」分支静默翻回 F（旁路声明的字节事实被吞，exit 0），
+            // 无符号 COMP-3 会写出 decode 自己拒收的 `00 0D`（verify exit 1）
+            // —— encode 的输出脱离 decode 可能的输出集合。sign=12 / 15
+            // 保留：无符号 zoned 的 C 区号（P1-3：同一份数据按 S9 与 9 两种
+            // copybook 解释）与未符号化的 F 都是 decode 的合法输出。
+            match sn {
+              Some(0xD) =>
+                if !field.pic.signed {
+                  return Err(
+                    "__nibbles['\{field.path}'].sign 13 (D, negative) applies only to signed fields: decode never writes a D sign nibble for PIC 9 / unsigned COMP-3 (legal signs there are 12 (C) and 15 (F))",
+                  )
+                }
+              _ => ()
+            }
             match out.get(field.path) {
               Some(Text(s)) =>
                 match parse_decimal_with_scale(s, field.pic) {

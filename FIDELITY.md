@@ -117,6 +117,17 @@ IBM HFP 没有 IEEE 那种「负零是特殊值」的语义，但**符号位仍�
 `Decimal`（否则 `PIC X(5)` 的 `"00012"` 会被静默写成 `"12"`）。回归：
 `src/jsonl_nibbles_field_type_test.mbt`。
 
+**`sign` 的域按字段符号性收敛**：`sign` 只认 12（C）/ 13（D）/ 15（F）
+（CB-A3）；其中 **13（D，负号）只能落在带符号字段上**（2026-11-15 审计）——
+无符号字段（`PIC 9` / 无符号 COMP-3）的 decode 恒拒负号，`sign=13` 永远
+不是 decode 的输出。静默收下时两条下游都不对：无符号 zoned 会被 encode
+的「-0 归零」分支静默翻回 F（旁路声明的字节事实被吞、exit 0），无符号
+COMP-3 会写出 decode 自己拒收的 `00 0D`（verify exit 1）—— encode 的输出
+脱离了 decode 可能的输出集合。`parse_jsonl_row` 现在报
+`sign 13 (D, negative) applies only to signed fields ...`。sign=12 / 15 在
+无符号字段上保留：无符号 zoned 的 C 区号（见下表）与未符号化的 F 都是
+decode 的合法输出。回归：`src/jsonl_sign_unsigned_field_test.mbt`。
+
 **`BLANK WHEN ZERO` 的零形态**：该子句描述「值为 0 时**写出**全空格」，
 但记录里也可能出现非空格写法的零（`F0 F0 F0`、`F0 F0 C0`、
 `F0 F0 F0 4E`）。decode 接受它们，encode 就必须原样还回去：全空格零的
