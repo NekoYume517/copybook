@@ -957,6 +957,18 @@ fn field_will_write(
   }
   match v {
     Null => false
+    // A2 的镜像（2026-11-15 审计）：数值类字段上的空串 = 「没有值」，
+    // encode_field 对重定义视图直接跳过写入（与 null 的视图语义一致）。
+    // 这里必须镜像那条跳过分支，否则空洞判定把「跳过不写」的视图当
+    // 「已写」，decode 带出的 __tail_hex / __tail_gap 快照被静默丢弃、
+    // 洞里的字节落回 0x40 —— 同一输入的 null 却会回填，"" 与 null 的
+    // 字节结果不一致（A2："" 等价于 null 或缺键）。文本 / NATIONAL /
+    // 编辑型的 "" 是合法的「若干空格」，仍算会写。
+    Text(s) if s.length() == 0 =>
+      match field.pic.category {
+        Numeric => false
+        _ => true
+      }
     _ => true
   }
 }
