@@ -144,7 +144,7 @@ pub(all) struct RecordLayout {
   name : String
   byte_length : Int
   fields : Array[FieldLayout]     // 仅叶子字段，按偏移排序
-  all_fields : Array[FieldLayout> // 含中间层
+  all_fields : Array[FieldLayout] // 含中间层
 }
 
 pub fn compile_layout(specs : Array[FieldSpec]) -> RecordLayout raise ParseError
@@ -300,7 +300,7 @@ pub fn decode_record_strict(layout : RecordLayout, record : BytesView) -> Result
   指定；默认 `Hfp`（有测试锁定），不允许"猜"。
 - X/A 文本字段：EBCDIC 解码后 `trim_end` 空格（0x40）。
 - NATIONAL：UTF-16BE；`PIC N(n)` 容纳 n 个 UTF-16 码元（**不是 n 个字符**），补充平面字符占两个码元。尾部 U+0020 是填充，编码不足部分写 `00 20`。非法代理项报带绝对字节偏移的 `InvalidNumeric`，不替换字符。
-  容量按码元数校验：`PIC N(1)` 只有 2 码元容量，存 emoji（U+1F600，代理对 `D8 3D DE 00`）会报 `InvalidNumeric`（`text exceeds NATIONAL code-unit capacity`）；要存 emoji 必须声明 `PIC N(2)`。锁定测试见 `src/national_capacity_test.mbt`。
+  容量按码元数校验：`PIC N(1)` 只有 1 码元容量，存 emoji（U+1F600，代理对 `D8 3D DE 00`）会报 `InvalidNumeric`（`text exceeds NATIONAL code-unit capacity`）；要存 emoji 必须声明 `PIC N(2)`。锁定测试见 `src/national_capacity_test.mbt`。
 - P 缩放位（`PIC PP9(3)` / `PIC 9(3)PP`）不占存储：存储宽度按
   `storage_digits`；数值语义折算进 `scale`（前导 P 增大 scale，
   尾随 P 使 scale 为负）。值 = coefficient × 10^(-scale)。
@@ -367,8 +367,10 @@ byte_length)`），且 `__tail_gap` 必须是**恰好一个区间**（2026-11-15
 多区间带「中洞」的形态逐段都落在超集内，但洞里的字节不在快照中，会被
 静默填成 `0x40`；合法编辑只会让空洞从左端收缩，同样产出单区间）。
 不满足时报 `InvalidBypass` 而不是把剩下的真实空洞静默填成 `0x40`。
-`__filler_gap` 只有前两条：中部空洞的两端由主视图字段决定，可以停在中部，
-且两个 FILLER 天然产出两个区间。
+`__filler_gap` 允许多个区间：中部空洞的两端由主视图字段决定，可以停在中部，
+且两个 FILLER 天然产出两个区间。几何与字节不能一起截断静态 FILLER / 布局裂缝：
+当前空洞中不在任何 REDEFINES 视图内的位置必须由快照覆盖，否则报 `InvalidBypass`；
+视图被编辑成 `Null` 后新暴露的位置没有旧字节可恢复，仍按未赋值存储处理。
 
 **空串 `""` 在数值 / 浮点字段上是「没有值」（A2，2026-11-12）**：它等价于
 `null` 或缺键，**绝不等于 0**。规则如下（`parse_jsonl_row` + `encode_record`
@@ -418,8 +420,8 @@ copybook verify --copybook <file.cpy> --data <file.dat>     # 往返自检
 
 `--record-length N` 语义：按 N 字节切分数据文件，每条记录按布局解码
 前 `布局长度` 字节；`N < 布局长度` 是用法错误（exit 2）；`N > 布局长度`
-时每条记录**超出布局的尾部字节被跳过**（适合 RDW/BDW 头或自定义填充），
-`encode` 不会还原这些字节（输出记录长恒等于布局长度）——decode 会在
+时每条记录**超出布局的尾部字节被跳过**（适合自定义尾部填充；
+RDW/BDW 头仍需先剥离），`encode` 不会还原这些字节（输出记录长恒等于布局长度）——decode 会在
 stderr 打一条 warning 说明每条跳过多少字节，退出码仍为 0。
 
 空数据文件对 decode / verify 都 exit 1（"data file ... is empty"），

@@ -190,7 +190,7 @@ decode 的合法输出。回归：`src/jsonl_sign_unsigned_field_test.mbt`。
 - **文本字段不受影响**：`PIC X` / `PIC N` 的 `""` 是合法值 —— 若干空格
   （`0x40` / `0x0020`），既有测试锁定，行为不变。
 
-对应回归：`src/empty_string_no_value_test.mbt`（11 条，覆盖 HFP 与 IEEE
+对应回归：`src/empty_string_no_value_test.mbt`（13 条，覆盖 HFP 与 IEEE
 两种 `--float-mode`）。
 
 ---
@@ -209,12 +209,12 @@ IBM HFP 的 `COMP-2` 尾数是 **56 位**，比 IEEE `Double` 的 53 位多 3 �
 | 环节 | 行为 |
 |---|---|
 | decode | 尾数低 3 位非零 → 产出 `FloatRaw(近似值, 原始 8 字节)`；低 3 位全零 → 普通 `Float`（`Double` 能精确承载，不加负担） |
-| encode | 见到 `FloatRaw` 且模式为 `Hfp` → **原样写回原始字节**，不重新计算 |
+| encode | 见到 `FloatRaw` 且原始字节长度与字段一致 → **原样写回原始字节**，不重新计算 |
 | JSONL | 保留键 `__float_hex`：`{"R.D":"4180000000000001"}`，`parse_jsonl_row` 还原成 `FloatRaw` |
 
 于是 `41 80 00 00 00 00 00 01`（F = 2^55+1）经 `decode → JSONL → encode` 逐字节恒等，`verify` 报告 `byte-identical`。可精确表示的 COMP-2（占绝大多数真实数据）不写 `__float_hex`，输出与旧版一致。
 
-`FloatRaw` 只在 `Hfp` 模式认原始字节：切到 `--float-mode ieee` 时同一份字节语义已变，必须按数值重新编码。
+`FloatRaw` 的原样写回不限于 HFP：HFP 用它承载超 `Double` 精度的尾数与非规范零，IEEE 用它承载 NaN / ±Infinity 的符号位和 payload。两种模式都通过 `__float_hex` 走 JSONL；`layout.float_mode` 保证同一次 decode/encode 使用同一种解释，不把一份 JSONL 旁路跨模式复用。
 
 **仍然存在的边界**（不影响 L1，但与数值精度有关）：主机的两个不同 COMP-2 值若只差尾数低 3 位，读成 `Double` 后数值会合并。`.f` 字段本身是近似值，精确值以 `__float_hex` 为准。这是 `Double` 类型表达能力所限，不是实现缺陷。
 
@@ -245,7 +245,7 @@ IBM HFP 的 `COMP-2` 尾数是 **56 位**，比 IEEE `Double` 的 53 位多 3 �
 ## 6. 怎么自己验证
 
 ```bash
-# L1：内存内 decode→encode 逐字节比对（严格版，覆盖 REDEFINES 全部视图）
+# L1：内存内 decode→encode 逐字节比对（宽容版；解不出的 REDEFINES 视图置 Null 并由旁路保真）
 copybook verify --copybook app.cpy --data app.dat
 
 # L1：经过 JSON 文本的真实工作流（FILLER 非空格字节经 __filler_hex 旁路保真）

@@ -218,7 +218,7 @@ BLANK WHEN ZERO 用于基本数值/编辑数值项）；旧实现静默丢弃、
 补充平面字符（emoji、少数字形复杂的汉字）在 UTF-16 里是**代理对，占 2 码元**：
 
 ```cobol
-05  EMOJI    PIC N(1).   * 只有 2 码元容量 → 存 emoji 报错（不截断、不替换）
+05  EMOJI    PIC N(1).   * 只有 1 码元容量 → 存 emoji 报错（不截断、不替换）
 05  EMOJI    PIC N(2).   * 4 字节，emoji 写成 D8 3D DE 00（U+1F600）
 ```
 
