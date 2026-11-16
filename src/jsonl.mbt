@@ -188,7 +188,11 @@ pub fn parse_jsonl_row(
               _ => return Err("__float_hex['\{k}'] must be a hex string")
             }
           }
-        _ => ()
+        Some(other) =>
+          return Err(
+            "__float_hex must be an object of {field: hex}, got \{json_kind_name(other)}",
+          )
+        None => ()
       }
       for field in layout.fields {
         // __float_hex 只服务浮点字段：decode 只为 COMP-1/COMP-2 写这个键
