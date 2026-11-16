@@ -424,6 +424,16 @@ fn decode_zoned(
         ),
       )
     }
+    // parser 正常路径限制为 18 位；公开手工 PicClause 仍可能更宽。
+    // 在乘法前守卫，避免 19 位以上的正数十进制静默回绕成负 Int64。
+    if coef > (9223372036854775807L - lo.to_int64()) / 10L {
+      return Err(
+        InvalidNumeric(
+          base_offset + i,
+          "zoned decimal exceeds supported Int64 magnitude",
+        ),
+      )
+    }
     coef = coef * 10L + lo.to_int64()
   }
   // 无符号字段不接受负号 —— 存储说"我不带符号"，出现 0xD 就是数据错了。
@@ -483,6 +493,16 @@ fn decode_packed(
     if digit > 9 {
       return Err(
         InvalidNumeric(base_offset + k / 2, "packed digit nibble must be 0..9"),
+      )
+    }
+    // 与 zoned 同一边界：手工公开布局可以超过 parser 的 18 位上限，
+    // 不能让十进制系数在 Int64 里回绕后作为一个错误的负值返回。
+    if coef > (9223372036854775807L - digit.to_int64()) / 10L {
+      return Err(
+        InvalidNumeric(
+          base_offset + k / 2,
+          "packed decimal exceeds supported Int64 magnitude",
+        ),
       )
     }
     coef = coef * 10L + digit.to_int64()
