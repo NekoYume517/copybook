@@ -272,10 +272,13 @@ fn slice_at(record : BytesView, offset : Int32, length : Int32) -> BytesView? {
   if offset < 0 || length < 0 {
     return None
   }
-  if offset + length > record.length() {
+  // 公开 RecordLayout 允许调用方手工给 offset/length；先 widening 再加，
+  // 避免 Int32 最大值附近的 end 回绕后绕过越界检查并切出错误区间。
+  let end = offset.to_int64() + length.to_int64()
+  if end > record.length().to_int64() {
     return None
   }
-  Some(record[offset:offset + length])
+  Some(record[offset:end.to_int()])
 }
 
 ///|
