@@ -1155,6 +1155,44 @@ fn gap_has(gaps : Array[(Int32, Int32)], pos : Int32) -> Bool {
 }
 
 ///|
+/// 当前中部空洞里，没有快照字节的位置是否可能来自「视图被编辑成 Null」。
+/// 若该位置根本不在任何重定义视图内，它就是静态 FILLER / 布局裂缝：
+/// decode 时同样没有字段会写它，快照若漏掉这里只可能是几何被截断。
+fn filler_gap_may_be_newly_exposed(
+  layout : RecordLayout,
+  pos : Int32,
+) -> Bool {
+  for field in layout.fields {
+    if field.is_redefining &&
+      pos >= field.offset &&
+      pos < field.offset + field.total_length {
+      return true
+    }
+  }
+  false
+}
+
+///|
+/// 带几何的 FILLER 快照不能把静态空洞与几何一起截断。合法编辑只会通过
+/// Null 视图暴露新空洞；其它当前空洞位置都必须由 spec 携带原始字节。
+fn filler_snapshot_complete(
+  layout : RecordLayout,
+  spec : Array[(Int32, Int32)],
+  current : Array[(Int32, Int32)],
+) -> Bool {
+  for (s, e) in current {
+    let mut p = s
+    while p < e {
+      if !gap_has(spec, p) && !filler_gap_may_be_newly_exposed(layout, p) {
+        return false
+      }
+      p = p + 1
+    }
+  }
+  true
+}
+
+///|
 /// 把「全视图不写」时的超集空洞快照按**绝对位置**回填，只写那些在当前
 /// 空洞集里仍然存在的字节。
 ///
@@ -1556,7 +1594,15 @@ pub fn encode_record(
                   ),
                 )
               }
-              restore_at_gaps(w, spec, filler_gaps(layout, Some(values)), bs)
+              let current = filler_gaps(layout, Some(values))
+              if !filler_snapshot_complete(layout, spec, current) {
+                return Err(
+                  InvalidBypass(
+                    "__filler_gap omits a static FILLER/layout gap: truncated geometry would silently fill its bytes with 0x40",
+                  ),
+                )
+              }
+              restore_at_gaps(w, spec, current, bs)
             }
             None => {
               // 旧 JSONL（没有 `__filler_gap`）：与 B1 之前逐字一致。
