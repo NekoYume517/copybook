@@ -10,7 +10,7 @@ test "manual layout offset plus length cannot wrap past the bounds check" {
     byte_length: 2,
     total_length: 2,
   }
-  let layout = { ..base, byte_length: 0, fields: [field], all_fields: [field] }
+  let layout = { ..base, byte_length: 0, fields: [field], all_fields: [field], }
   match decode_record(layout, b"\xC1\xC2") {
     Err(FieldOutOfBounds(_, _, _)) => ()
     Err(e) => fail("expected FieldOutOfBounds, got \{e.to_display()}")

@@ -1158,10 +1158,7 @@ fn gap_has(gaps : Array[(Int32, Int32)], pos : Int32) -> Bool {
 /// 当前中部空洞里，没有快照字节的位置是否可能来自「视图被编辑成 Null」。
 /// 若该位置根本不在任何重定义视图内，它就是静态 FILLER / 布局裂缝：
 /// decode 时同样没有字段会写它，快照若漏掉这里只可能是几何被截断。
-fn filler_gap_may_be_newly_exposed(
-  layout : RecordLayout,
-  pos : Int32,
-) -> Bool {
+fn filler_gap_may_be_newly_exposed(layout : RecordLayout, pos : Int32) -> Bool {
   for field in layout.fields {
     if field.is_redefining &&
       pos >= field.offset &&

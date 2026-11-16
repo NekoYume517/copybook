@@ -15,12 +15,12 @@ fn fgc_layout() -> RecordLayout raise ParseError {
 test "filler geometry omitting another static gap is rejected" {
   let layout = fgc_layout()
   let row = parse_jsonl_row(
-    layout,
-    "{\"R.A\":\"A\",\"R.B\":\"B\",\"R.C\":\"C\",\"__filler_hex\":\"c3\",\"__filler_gap\":[[1,2]]}",
+    layout, "{\"R.A\":\"A\",\"R.B\":\"B\",\"R.C\":\"C\",\"__filler_hex\":\"c3\",\"__filler_gap\":[[1,2]]}",
   ).unwrap()
   match encode_record(layout, row) {
     Err(e) => assert_true(e.to_display().contains("__filler_gap"))
-    Ok(_) => fail("truncated filler geometry must not silently blank the second gap")
+    Ok(_) =>
+      fail("truncated filler geometry must not silently blank the second gap")
   }
 }
 
@@ -28,8 +28,7 @@ test "filler geometry omitting another static gap is rejected" {
 test "complete geometry for two static filler gaps remains valid" {
   let layout = fgc_layout()
   let row = parse_jsonl_row(
-    layout,
-    "{\"R.A\":\"A\",\"R.B\":\"B\",\"R.C\":\"C\",\"__filler_hex\":\"c3c7\",\"__filler_gap\":[[1,2],[3,4]]}",
+    layout, "{\"R.A\":\"A\",\"R.B\":\"B\",\"R.C\":\"C\",\"__filler_hex\":\"c3c7\",\"__filler_gap\":[[1,2],[3,4]]}",
   ).unwrap()
   match encode_record(layout, row) {
     Err(e) => fail("complete filler geometry must encode: \{e.to_display()}")

@@ -9,15 +9,18 @@ fn mno_single(pic : String) -> RecordLayout raise ParseError {
 ///|
 test "manual 19-digit zoned layout rejects Int64 overflow" {
   let base = mno_single("9(18)")
-  let pic = { ..base.fields[0].pic, digits: 19, storage_digits: 19 }
-  let field = {
-    ..base.fields[0],
+  let pic = { ..base.fields[0].pic, digits: 19, storage_digits: 19, }
+  let field = { ..base.fields[0], byte_length: 19, total_length: 19, pic, }
+  let layout = {
+    ..base,
     byte_length: 19,
-    total_length: 19,
-    pic,
+    fields: [field],
+    all_fields: [field],
   }
-  let layout = { ..base, byte_length: 19, fields: [field], all_fields: [field] }
-  let record = bs([0xF9, 0xF9, 0xF9, 0xF9, 0xF9, 0xF9, 0xF9, 0xF9, 0xF9, 0xF9, 0xF9, 0xF9, 0xF9, 0xF9, 0xF9, 0xF9, 0xF9, 0xF9, 0xF9])
+  let record = bs([
+    0xF9, 0xF9, 0xF9, 0xF9, 0xF9, 0xF9, 0xF9, 0xF9, 0xF9, 0xF9, 0xF9, 0xF9, 0xF9,
+    0xF9, 0xF9, 0xF9, 0xF9, 0xF9, 0xF9,
+  ])
   match decode_record(layout, record) {
     Err(InvalidNumeric(_, message)) => assert_true(message.contains("Int64"))
     Err(e) => fail("expected InvalidNumeric, got \{e.to_display()}")
@@ -28,9 +31,9 @@ test "manual 19-digit zoned layout rejects Int64 overflow" {
 ///|
 test "manual 19-digit packed layout rejects Int64 overflow" {
   let base = mno_single("9(18) COMP-3")
-  let pic = { ..base.fields[0].pic, digits: 19, storage_digits: 19 }
-  let field = { ..base.fields[0], pic }
-  let layout = { ..base, fields: [field], all_fields: [field] }
+  let pic = { ..base.fields[0].pic, digits: 19, storage_digits: 19, }
+  let field = { ..base.fields[0], pic, }
+  let layout = { ..base, fields: [field], all_fields: [field], }
   let record = bs([0x99, 0x99, 0x99, 0x99, 0x99, 0x99, 0x99, 0x99, 0x99, 0x9F])
   match decode_record(layout, record) {
     Err(InvalidNumeric(_, message)) => assert_true(message.contains("Int64"))
