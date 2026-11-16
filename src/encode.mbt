@@ -974,6 +974,33 @@ fn field_will_write(
 }
 
 ///|
+/// 手工未展开 OCCURS 的单个元素取值。与 encode_record 共用同一套优先级：
+/// 显式下标键优先；裸路径/裸名只后备第一个元素。
+fn occurs_element_values(
+  field : FieldLayout,
+  k : Int32,
+  values : Map[String, CellValue],
+) -> Map[String, CellValue] {
+  let key = "\{field.path}(\{k})"
+  let scoped : Map[String, CellValue] = Map([])
+  match values.get(key) {
+    Some(v) => scoped[key] = v
+    None =>
+      if k == 1 {
+        match values.get(field.path) {
+          Some(v) => scoped[key] = v
+          None =>
+            match values.get(field.name) {
+              Some(v) => scoped[key] = v
+              None => ()
+            }
+        }
+      }
+  }
+  scoped
+}
+
+///|
 /// 收集「会真正写入」的字段区间，按起点升序。
 fn written_intervals(
   layout : RecordLayout,
@@ -981,7 +1008,31 @@ fn written_intervals(
 ) -> Array[(Int32, Int32)] {
   let ivs : Array[(Int32, Int32)] = []
   for f in layout.fields {
-    if field_will_write(f, values) {
+    // 公开 API 允许手工构造未展开的 OCCURS。视图的每个元素可以分别
+    // 为 Null / "" / 有值，不能用一个裸路径查询代表整个字段：否则显式
+    // 下标编辑会被原始快照覆盖，或裸路径的第一个元素让后续 Null 元素
+    // 丢掉尾部快照。逐元素构造与 encode_record 相同的 scoped values。
+    if f.occurs > 1 {
+      let mut k = 1
+      while k <= f.occurs {
+        let key = "\{f.path}(\{k})"
+        let elem : FieldLayout = {
+          ..f,
+          path: key,
+          offset: f.offset + (k - 1) * f.byte_length,
+          occurs: 1,
+          total_length: f.byte_length,
+        }
+        let scoped = match values {
+          Some(m) => Some(occurs_element_values(f, k, m))
+          None => None
+        }
+        if field_will_write(elem, scoped) {
+          ivs.push((elem.offset, elem.offset + elem.total_length))
+        }
+        k = k + 1
+      }
+    } else if field_will_write(f, values) {
       ivs.push((f.offset, f.offset + f.total_length))
     }
   }
@@ -1293,22 +1344,7 @@ pub fn encode_record(
           path: key,
           offset: field.offset + (k - 1) * field.byte_length,
         }
-        let scoped : Map[String, CellValue] = Map([])
-        match values.get(key) {
-          Some(v) => scoped[key] = v
-          // 未给下标键但给了裸名/主路径：只有第 1 个元素用它（宽容手写 JSON）
-          None =>
-            if k == 1 {
-              match values.get(field.path) {
-                Some(v) => scoped[key] = v
-                None =>
-                  match values.get(field.name) {
-                    Some(v) => scoped[key] = v
-                    None => ()
-                  }
-              }
-            }
-        }
+        let scoped = occurs_element_values(field, k, values)
         let r = encode_field(w, elem, scoped, layout.float_mode)
         match r {
           Ok(_) => ()
