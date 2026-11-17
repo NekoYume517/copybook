@@ -497,10 +497,29 @@ fn decode_zoned(
     embedded_negative
   }
   if !signed && negative {
+    // **报错必须指向真正带负号的字节**（2026-11-17-b 审计）：符号位置的判据
+    // 在上面用 `sign_leading` 分了三档，这里却恒报 `n - 1` 与
+    // `digit_bytes[dn - 1]`。于是 `05 A PIC 9(3) SIGN IS LEADING.` 喂
+    // `D1 F2 F3` 报的是 "offset 2 … (byte 0xF3)" —— 0xF3 是合法的 F 区号，
+    // 真正越界的是 offset 0 的 0xD1；`SIGN ... SEPARATE` 的 LEADING 形态
+    // （符号字节在 offset 0）同样指错，TRAILING 形态则报了正确的偏移但
+    // 错误的字节（0x60 被说成末位数字）。
+    // 逐字节定位是 `InvalidNumeric` 唯一的用处，指错等于没有。
+    let pos = if sign_separate {
+      if sign_leading {
+        0
+      } else {
+        n - 1
+      }
+    } else if sign_leading {
+      0
+    } else {
+      n - 1
+    }
     return Err(
       InvalidNumeric(
-        base_offset + n - 1,
-        "unsigned zoned decimal has negative sign (byte 0x\{hex2(digit_bytes[dn - 1].to_int())})",
+        base_offset + pos,
+        "unsigned zoned decimal has negative sign (byte 0x\{hex2(bytes[pos].to_int())})",
       ),
     )
   }
