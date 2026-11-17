@@ -123,13 +123,11 @@ pub fn parse_jsonl_row(
           )
         None => ()
       }
-      // 同时按完整路径和裸名查找，兼容手写与导出的两种写法
+      // 取值顺序收敛在 `field_value`（C4）：完整路径 → 裸路径 → 裸名，且裸键
+      // 只服务第一个元素。节编码 / 渲染 / 空洞判定共用同一个函数。
       let out : Map[String, CellValue] = Map([])
       for field in layout.fields {
-        let raw = match obj.get(field.path) {
-          Some(v) => Some(v)
-          None => obj.get(field.name)
-        }
+        let raw = field_value(field, obj)
         match raw {
           None => ()
           Some(Json::String(s)) =>

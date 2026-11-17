@@ -238,13 +238,11 @@ pub fn render_jsonl(
   for row in rows {
     let obj : Map[String, Json] = Map([])
     for field in layout.fields {
-      let v = match row.get(field.path) {
+      // 取值口径与 encode_field / parse_jsonl_row / field_will_write 同一个
+      // `field_value`（C4）：完整路径 → 裸路径 → 裸名，裸键只服务第一项。
+      let v = match field_value(field, row) {
         Some(x) => x
-        None =>
-          match row.get(field.name) {
-            Some(x) => x
-            None => Null
-          }
+        None => Null
       }
       obj[field.path] = cell_to_json(v)
     }
@@ -259,13 +257,9 @@ pub fn render_jsonl(
     // 普通记录（无十进制字段）的 JSONL 输出保持不变。
     let nib : Map[String, Json] = Map([])
     for field in layout.fields {
-      let v = match row.get(field.path) {
+      let v = match field_value(field, row) {
         Some(x) => x
-        None =>
-          match row.get(field.name) {
-            Some(x) => x
-            None => Null
-          }
+        None => Null
       }
       match v {
         Decimal(d) =>
@@ -301,13 +295,9 @@ pub fn render_jsonl(
     // 输出保持不变。
     let floats : Map[String, Json] = Map([])
     for field in layout.fields {
-      let v = match row.get(field.path) {
+      let v = match field_value(field, row) {
         Some(x) => x
-        None =>
-          match row.get(field.name) {
-            Some(x) => x
-            None => Null
-          }
+        None => Null
       }
       match v {
         FloatRaw(_, raw) =>

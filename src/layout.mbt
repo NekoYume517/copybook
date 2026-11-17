@@ -1054,6 +1054,60 @@ fn split_index_suffix(path : String) -> (String, String) {
 }
 
 ///|
+/// 下标后缀是否全是「第一个元素」，即 `""` / `"(1)"` / `"(1)(1)"`（嵌套 OCCURS）。
+///
+/// 只有这种字段才接受「裸路径 / 裸名」后备 —— 后备的定义是**第一项**，不是
+/// 「所有元素都拿同一个值」。
+fn only_first_indices(suffix : StringView) -> Bool {
+  let n = suffix.length()
+  if n % 3 != 0 {
+    return false
+  }
+  let mut i = 0
+  while i < n {
+    if suffix[i] != '(' || suffix[i + 1] != '1' || suffix[i + 2] != ')' {
+      return false
+    }
+    i = i + 3
+  }
+  true
+}
+
+///|
+/// 按「完整路径 → 裸路径（去下标）→ 裸名」取字段的值（C4，2026-11-17 审计）。
+///
+/// `API.md` §5 声明：「未给第一项下标键时，裸路径和裸名**仅作为第一项的后备
+/// 值**，显式下标键优先」。旧实现只兑现了裸名那一半，而且兑现错了：
+/// `compile_layout` 把 `05 A OCCURS 3` 摊平成 `R.A(1..3)`、`occurs == 1` 之后，
+/// 取值只查 `field.path` 与 `field.name` ——
+///   - `{"R.A":5}` 三个元素一个都查不到 → 全写 0、exit 0（用户以为改了值）；
+///   - `{"A":5}` 三个元素**都**拿到 5（同一个裸名被遍历的每个元素各命中一次，
+///     等于把便利做成了批量赋值）。
+/// 只有手工构造的 `occurs > 1` 布局走 `occurs_element_values` 才有裸路径后备，
+/// 也就是说「公开手工结构承诺过的行为，parser 可达的常规形态反而没有」。
+///
+/// 四条读值路径（`parse_jsonl_row` 取值 / `render_jsonl` 渲染 / `encode_field`
+/// 编码 / `field_will_write` 空洞判定）**共用本函数**：前两次漏镜像的 P2
+/// （A2 的空串、2026-11-15 的空洞判定）都是"同一语义在一个方向写了、另一个
+/// 方向没写"。裸键只服务第一个元素（`only_first_indices`），`A(2)` 不会去碰 `A`。
+fn[T] field_value(field : FieldLayout, values : Map[String, T]) -> T? {
+  match values.get(field.path) {
+    Some(v) => Some(v)
+    None => {
+      let (base, suffix) = split_index_suffix(field.path)
+      if only_first_indices(suffix) {
+        match values.get(base) {
+          Some(v) => Some(v)
+          None => values.get(field.name)
+        }
+      } else {
+        None
+      }
+    }
+  }
+}
+
+///|
 /// 记录内所有**可解码叶子**的字节区间总数（用于校验"无空隙、无重叠"）。
 ///
 /// 仅供测试与 `verify` 自检使用：正常情况下它应当等于 `byte_length`。

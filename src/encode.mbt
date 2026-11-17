@@ -624,14 +624,12 @@ fn encode_field(
   let pic = field.pic
   let offset = field.offset
   let length = field.byte_length
-  // 取值的顺序：优先完整路径，其次字段名（宽容一点，方便手写 JSON）
-  let v = match values.get(field.path) {
+  // 取值顺序统一收敛在 `field_value`（C4）：完整路径 → 裸路径 → 裸名，
+  // 且裸键只服务第一个元素。手写 JSON 的宽容度与 render_jsonl /
+  // parse_jsonl_row / field_will_write 完全同源。
+  let v = match field_value(field, values) {
     Some(x) => x
-    None =>
-      match values.get(field.name) {
-        Some(x) => x
-        None => Null
-      }
+    None => Null
   }
   // 重定义视图只是同一段字节的另一种读法。缺值/Null 必须保留主视图字节，
   // 不能写零或空格；在单字段入口统一处理，也覆盖手工 OCCURS 的逐元素编码。
@@ -945,14 +943,12 @@ fn field_will_write(
   }
   let v = match values {
     None => return false
+    // 与 encode_field 同一个取值函数（C4）：空洞判定说「不写」而编码器说
+    // 「写」是 CB-16 那一类两条路径结论矛盾的根源，取值口径必须同源。
     Some(m) =>
-      match m.get(field.path) {
+      match field_value(field, m) {
         Some(x) => x
-        None =>
-          match m.get(field.name) {
-            Some(x) => x
-            None => return false
-          }
+        None => return false
       }
   }
   match v {
@@ -987,13 +983,11 @@ fn occurs_element_values(
     Some(v) => scoped[key] = v
     None =>
       if k == 1 {
-        match values.get(field.path) {
+        // 第一个元素的后备与 parser 展开的叶子同源（C4 的 `field_value`），
+        // 不再另写一份 path → name 的查找。
+        match field_value(field, values) {
           Some(v) => scoped[key] = v
-          None =>
-            match values.get(field.name) {
-              Some(v) => scoped[key] = v
-              None => ()
-            }
+          None => ()
         }
       }
   }
