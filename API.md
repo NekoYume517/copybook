@@ -187,6 +187,19 @@ pub fn RecordLayout::covered_bytes(self : RecordLayout) -> Int
 > 项，且不占字符位置）；`P` 必须是数字位最左或最右端的连续一段
 > （`9PP9` / `9(3)PPV99` 报 `SyntaxError`）。
 
+> **`COMP-5` / `COMPUTATIONAL-5` 按 `COMP` 处理，这是已声明的限制**
+> （2026-11-17 审计）。IBM 的 COMP-5 **不受 PIC 位数约束**：容器满量程都
+> 合法（`9(4) COMP-5` 是 2 字节无符号，最大 65535；`S9(4) COMP-5` 最大
+> 32767）。本实现对 COMP 族一律强制「十进制容量 = PIC 声明位数」（见
+> `docs/implementation.md` 第 9 节），因此这类**合法主机数据**会被判成
+> `InvalidNumeric`（`decoded value … exceeds 4 decimal digits declared by
+> PIC`）。落在位数内的值行为与 `COMP` 完全一致，多数 copybook 不受影响；
+> 需要满量程语义时目前只能放大声明（如 `S9(9) COMP`）或自行换算。
+> 回归 `src/comp5_range_test.mbt` 双向锁定（位数内 = COMP、超位数被拒）——
+> 将来若要真正支持 COMP-5，得给 `Usage` 增加变体并让
+> `decode_binary` / `encode_binary` 跳过十进制容量校验，那是有意识的
+> 契约变更，不应悄悄漂移。
+
 **权威布局答案（已用 Python 交叉核对，测试必须匹配）：**
 
 `customer.cpy` → **总长 54 字节**
