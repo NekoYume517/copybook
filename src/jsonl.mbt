@@ -77,6 +77,60 @@ pub fn parse_jsonl_row(
           )
         }
       }
+      // **裸名歧义**（C9，2026-11-17 审计）：同一个裸名指向**多个不同字段**时，
+      // 旧实现把值写进每一个（实测 `{"A":5}` 同时改写 R.G1.A 与 R.G2.A），
+      // 而旁路键族（`__nibbles` / `__float_hex`）是「命中即 remove、先到先得」。
+      // 两种口径都不对：前者把便利做成了批量赋值，后者让第二个字段的字节声明
+      // 被无声丢弃。统一成「单命中照写、多命中报歧义」，文案点名歧义路径。
+      //
+      // 与 OCCURS 的区别：`05 A OCCURS 3` 的 `{"A":5}` **不是**歧义 —— 那是同一个
+      // 字段的三个元素，语义是「后备第一项」（`field_value` / `only_first_indices`）。
+      // 判定按「基路径」（`split_index_suffix` 去掉下标）去重，所以同一字段的
+      // 多个展开元素只算一个 owner。
+      let name_owners : Map[String, Array[String]] = Map([])
+      let field_paths : Map[String, Bool] = Map([])
+      for field in layout.fields {
+        field_paths[field.path] = true
+        let (base, _) = split_index_suffix(field.path)
+        let owners = match name_owners.get(field.name) {
+          Some(a) => a
+          None => {
+            let a : Array[String] = []
+            name_owners[field.name] = a
+            a
+          }
+        }
+        if !owners.contains(base) {
+          owners.push(base)
+        }
+      }
+      let ambiguity_of = fn(k : String) -> String? {
+        // 完整路径是精确键，永远不算歧义
+        if field_paths.contains(k) {
+          return None
+        }
+        match name_owners.get(k) {
+          Some(owners) =>
+            if owners.length() > 1 {
+              Some(
+                "field name '\{k}' is ambiguous: it matches \{owners.length()} different fields (\{owners.join(", ")}); use the full field path",
+              )
+            } else {
+              None
+            }
+          None => None
+        }
+      }
+      for k in obj.keys() {
+        if k.length() >= 2 && k[0] == '_' && k[1] == '_' {
+          // 保留键已由上面的白名单单独校验
+          continue
+        }
+        match ambiguity_of(k) {
+          Some(msg) => return Err(msg)
+          None => ()
+        }
+      }
       // 字节保真的旁路信息：`{"__nibbles": {"字段路径": {"sign": 12, "pad": 15}}}`
       // 见 render_jsonl / FIDELITY.md。没有这个键时行为与旧版完全一致。
       //
@@ -91,6 +145,11 @@ pub fn parse_jsonl_row(
       match obj.get("__nibbles") {
         Some(Json::Object(nobj)) =>
           for k, jv in nobj {
+            // 旁路键的裸名同样按 C9 的裁决收敛：多命中报歧义，不再先到先得。
+            match ambiguity_of(k) {
+              Some(msg) => return Err(msg)
+              None => ()
+            }
             match jv {
               Object(entry) => {
                 let nib_val = fn(key : String) -> Result[Int32?, String] {
@@ -209,6 +268,11 @@ pub fn parse_jsonl_row(
       match obj.get("__float_hex") {
         Some(Json::Object(fobj)) =>
           for k, jv in fobj {
+            // 与 __nibbles 同一口径（C9）：旁路键的裸名多命中即报歧义。
+            match ambiguity_of(k) {
+              Some(msg) => return Err(msg)
+              None => ()
+            }
             match jv {
               Json::String(h) =>
                 match hex_to_bytes(h) {
