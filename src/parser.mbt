@@ -994,12 +994,33 @@ fn parse_entry_clauses(
         Some(u) => u
         None => pc.usage
       }
+      // **`SIGN ... SEPARATE` 只对 zoned（DISPLAY 数值）改变符号性**
+      // （C2，2026-11-17 审计）。API.md §3 的表、README「特性」表、
+      // docs/implementation.md 的 PICTURE 符号表三处都写「COMP 族把符号编在
+      // 表示内部，子句照 IBM 忽略、+0 字节」——「忽略」的字面含义就是解析结果
+      // 不变。旧写法 `pc.signed || sign_separate` 只保证"不加字节"，却把无符号
+      // 字段翻成有符号，于是同一段字节的数值解释被静默改掉：
+      //
+      //   PIC 9(2) COMP SIGN IS SEPARATE   喂 FF FF
+      //     声明是无符号 2 位（容量 99）→ 本应 InvalidNumeric
+      //     旧实现解出 -1（补码最高位被当成符号位）
+      //   PIC 9(3) COMP-3 SIGN IS SEPARATE  喂 12 3D
+      //     无符号 packed 的负号 → 本应 "unsigned packed decimal has negative sign"
+      //     旧实现解出 -123
+      //
+      // 这与 2026-11-13「字符项写 SIGN 在解析期拒绝」同族：加字节是凭空发明
+      // 存储，翻符号是凭空发明符号位。zoned 上该子句**确实**让字段带符号
+      // （符号独占一个字节，`F0 F0 F0 60` 是 -0），所以 Display 分支保持原样；
+      // 显式写了 `S` 的字段由于 `pc.signed` 仍是有符号，不受影响。
+      // COMP-1/COMP-2 没有符号位也没有十进制容量，`signed` 对它们本无意义，
+      // 这条收紧后它们连标志位都不再被点亮（解码结果不变，见回归第 4 条）。
+      let sign_separate_applies = sign_separate && usage_same(u, Display)
       Some({
         category: pc.category,
         digits: pc.digits,
         scale: pc.scale,
         storage_digits: pc.storage_digits,
-        signed: pc.signed || sign_separate,
+        signed: pc.signed || sign_separate_applies,
         usage: u,
         sign_separate,
         sign_leading,
