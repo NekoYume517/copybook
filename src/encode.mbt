@@ -392,12 +392,19 @@ fn encode_binary(
 /// 而不是左对齐的 `C1 C2 40 40 40`。旧实现恒左对齐，主机按右对齐解读时
 /// 值是 `"  AB"` 而非 `"AB"`，且同一份 copybook 上 verify 因布局自洽
 /// 仍报 byte-identical —— 值被静默改变。
+/// **可打印性必须与 decode 对称**（C5，2026-11-17 审计）：`decode_text` 用
+/// `ebcdic_is_printable` 逐字节校验（C0 / DEL / C1 / U+00AD 一律
+/// `InvalidEbcdic`），而 cp037 是**全定义**表 —— `ebcdic_encode_strict` 只回答
+/// 「表里有没有」，于是 `"\u{0080}"` 被写成 0x20、`"\u{00AD}"` 被写成 0xCA，
+/// exit 0 而该记录再也读不回来。判据与 2026-11-15 的 `sign=13 落无符号字段`
+/// 同一条：**encode 的输出必须落在 decode 的可接受集合里**。
 fn encode_text(
   w : Writer,
   offset : Int32,
   width : Int32,
   s : StringView,
   justified_right : Bool,
+  path : StringView,
 ) -> Result[Unit, DecodeError] {
   let strict = ebcdic_encode_strict(s)
   let codes = match strict {
@@ -408,6 +415,17 @@ fn encode_text(
           offset, "text contains characters not representable in cp037 EBCDIC",
         ),
       )
+  }
+  // 逐字节与 decode 的 printable 判定对齐（表内有映射但不可打印的码点）。
+  for i = 0; i < codes.length(); i = i + 1 {
+    if !ebcdic_is_printable(codes[i]) {
+      return Err(
+        TextNotEncodable(
+          offset,
+          "field '\{path}' contains a non-printable character at value position \{i}: U+\{hex4(ebcdic_to_unicode(codes[i]))} maps to cp037 byte 0x\{hex2(codes[i])}, which decode rejects as invalid EBCDIC (control / C1 / soft hyphen); give a printable character instead",
+        ),
+      )
+    }
   }
   let n = codes.length()
   if n > width {
@@ -714,13 +732,13 @@ fn encode_field(
     // 不产生对齐效果，两者按原样编码（编辑型是模式串展开的显示串，右对齐
     // 会破坏小数点/符号的位置）。
     Edited =>
-      match encode_text(w, offset, length, as_text(v), false) {
+      match encode_text(w, offset, length, as_text(v), false, field.path) {
         Ok(_) => Ok(())
         Err(e) => Err(e)
       }
     Alphanumeric | Alphabetic => {
       let jr = pic.justified_right
-      match encode_text(w, offset, length, as_text(v), jr) {
+      match encode_text(w, offset, length, as_text(v), jr, field.path) {
         Ok(_) => Ok(())
         Err(e) => Err(e)
       }

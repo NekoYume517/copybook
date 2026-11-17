@@ -218,6 +218,17 @@ pub(all) suberror DecodeError {
   /// 字节集，长度不对只可能是损坏或蓄意构造——短缺曾被静默写成 0x40、
   /// 超长曾被静默忽略，两者都让「无损往返」变成 exit 0 的静默改字节。
   InvalidBypass(String)
+  /// 文本值里有 cp037 **表内存在、但 decode 会拒收**的码点（C5，2026-11-17）。
+  ///
+  /// `decode_text` 用 `ebcdic_is_printable` 逐字节校验（C0 / DEL / C1 /
+  /// U+00AD 一律 `InvalidEbcdic`），而 `encode_text` 只查「cp037 表里有没有」，
+  /// 于是 `PIC X(1)` 写 `"\u{0080}"` 得到 0x20、写 `"\u{00AD}"` 得到 0xCA，
+  /// exit 0 —— encode 的输出落在 decode 的可接受集合之外，与 2026-11-15 的
+  /// `sign=13 落无符号字段` 完全同型。
+  ///
+  /// 追加变体（与 `RecordRemainder` / `EncodeFailed` 同类），不属于签名变更。
+  /// `(offset, detail)`：detail 里带字段路径、码点与对应 EBCDIC 字节。
+  TextNotEncodable(Int32, String)
 }
 
 ///|
@@ -236,6 +247,8 @@ pub fn DecodeError::to_display(self : DecodeError) -> String {
       "field '\{field}' out of bounds: offset \{offset}, length \{length}"
     EncodeFailed(detail) => "encode failed after a successful decode: \{detail}"
     InvalidBypass(detail) => "invalid bypass key: \{detail}"
+    TextNotEncodable(offset, detail) =>
+      "text is not encodable at offset \{offset}: \{detail}"
   }
 }
 
@@ -247,6 +260,15 @@ fn hex2(v : Int32) -> String {
   let lo = v & 0xF
   sb.write_string(hex_digit(hi))
   sb.write_string(hex_digit(lo))
+  sb.to_string()
+}
+
+///|
+/// 四位数十六进制（大写、补零）—— 错误消息里报码点用（C5）。
+fn hex4(v : Int32) -> String {
+  let sb = StringBuilder()
+  sb.write_string(hex2((v >> 8) & 0xFF))
+  sb.write_string(hex2(v & 0xFF))
   sb.to_string()
 }
 
