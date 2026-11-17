@@ -1,4 +1,19 @@
 ///|
+/// 该键是否是 API.md §6 表格里文档化的保留键（C3，2026-11-17 审计）。
+///
+/// 白名单就是那张表的 6 行 —— 新增保留键必须先写进文档，否则手写 JSONL 的
+/// 拼写错误会被静默吞掉。`__record_bytes` 不在此列：它是内存路径专用，
+/// 不是 JSONL 键。
+fn is_documented_reserved_key(k : String) -> Bool {
+  k == "__nibbles" ||
+  k == "__float_hex" ||
+  k == "__tail_hex" ||
+  k == "__tail_gap" ||
+  k == "__filler_hex" ||
+  k == "__filler_gap"
+}
+
+///|
 /// 该字段是否会产出/消费 `__nibbles`（符号半字节与 packed 填充半字节）。
 ///
 /// 只有 zoned（Numeric + Display）与 packed（Numeric + Comp3）在存储层有
@@ -42,6 +57,26 @@ pub fn parse_jsonl_row(
   }
   match parsed {
     Object(obj) => {
+      // **保留键白名单**（C3，2026-11-17 审计）：NEW-6 / CB-A4 承诺「`__` 键
+      // 损坏必须报错，没有误伤面」，但此前只校验了**已认识的键的内容**，键名
+      // 拼错（`__nibble` / `__tail_hexx`）会落进「未知字段」的宽容分支，旁路
+      // 信息被静默丢弃、exit 0 —— 比内容损坏更隐蔽：字节悄悄换成默认写法。
+      //
+      // 误伤面为零有据：`lexer.mbt` 只让标识符以字母开头，COBOL 字段名不可能
+      // 以 `_` 开头，所以「以 `__` 开头且不在白名单」只可能是损坏。
+      // `__record_bytes` 是内存路径专用（decode 挂在结果 map 上、由
+      // encode_record 消费），出现在 JSONL 里同样是损坏 —— JSONL 的原始字节
+      // 载体是 `__tail_hex` / `__filler_hex` 加配套几何。
+      for k in obj.keys() {
+        if k.length() >= 2 &&
+          k[0] == '_' &&
+          k[1] == '_' &&
+          !is_documented_reserved_key(k) {
+          return Err(
+            "unknown reserved key '\{k}' (documented keys: __nibbles, __float_hex, __tail_hex, __tail_gap, __filler_hex, __filler_gap)",
+          )
+        }
+      }
       // 字节保真的旁路信息：`{"__nibbles": {"字段路径": {"sign": 12, "pad": 15}}}`
       // 见 render_jsonl / FIDELITY.md。没有这个键时行为与旧版完全一致。
       //
