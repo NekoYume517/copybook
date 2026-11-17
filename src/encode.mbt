@@ -1498,6 +1498,31 @@ pub fn encode_record(
   }
   match values.get("__record_bytes") {
     Some(Bytes(bs)) => {
+      // **同一个洞的字节只能有一个载体**（C10，2026-11-17 审计）：`__record_bytes`
+      // 是内存路径（decode 把整条原始记录挂在结果 map 上），`__tail_hex` /
+      // `__filler_hex`（加配套几何）是 JSONL 路径。两者同时出现时旧实现让前者
+      // 整条短路，后者被无声忽略 —— 既不回填也不报错，也没有键对账。
+      for k in ["__tail_hex", "__filler_hex", "__tail_gap", "__filler_gap"] {
+        if values.contains(k) {
+          return Err(
+            InvalidBypass(
+              "__record_bytes cannot be combined with \{k}: they are two different carriers for the same hole bytes (__record_bytes is the in-memory whole-record path, __tail_hex/__filler_hex + *_gap are the JSONL path)",
+            ),
+          )
+        }
+      }
+      // **长度不足必须报错**（同一条审计）：`restore` 闭包是
+      // `if src < bs.length() { w.set(...) }`，比布局短的 `__record_bytes` 会让
+      // 没被覆盖的洞落回 Writer 初值 0x40 —— 与 CB-15 修复前的损坏形态完全一样，
+      // 只是入口换成了内存路径。decode 写出的是**整条记录**（可能长于布局，
+      // 因为宽容解码接受超长输入），所以只拒绝「短」，不拒绝「长」。
+      if bs.length() < layout.byte_length {
+        return Err(
+          InvalidBypass(
+            "__record_bytes must carry the whole record: layout is \{layout.byte_length} byte(s), got \{bs.length()}; hole bytes would silently fall back to 0x40",
+          ),
+        )
+      }
       // 内存路径：整条记录，两个集合都按绝对偏移取。
       restore(primary_tail_gaps(layout, Some(values)), bs, true)
       restore(filler_gaps(layout, Some(values)), bs, true)
