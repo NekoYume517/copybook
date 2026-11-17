@@ -380,13 +380,18 @@ pub fn render_table(
     let texts : Array[String] = []
     for i = 0; i < ncol; i = i + 1 {
       let field = fields[i]
-      let v = match row.get(field.path) {
+      // 取值口径与 encode_field / parse_jsonl_row / render_jsonl /
+      // field_will_write 同一个 `field_value`（C4 + 2026-11-17-b 审计）：
+      // 完整路径 → 裸路径 → 裸名，且裸键只服务第一项。
+      //
+      // 这里是 C4 的**第五份拷贝**：旧实现自己写了一段
+      // `row.get(field.path)` → `row.get(field.name)`，于是同一行数据在
+      // 表格与 JSONL 上给出互相矛盾的结论 —— `{"A":"5"}` 让 `A OCCURS 3`
+      // 的三个元素全显示 5（JSONL 是 5/null/null），而 `{"R.A":"7"}`
+      // （裸路径，同样是第一项的后备）在表格里完全不认、三列全空。
+      let v = match field_value(field, row) {
         Some(x) => x
-        None =>
-          match row.get(field.name) {
-            Some(x) => x
-            None => Null
-          }
+        None => Null
       }
       let t = v.to_display()
       texts.push(t)
