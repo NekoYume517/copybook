@@ -315,6 +315,14 @@ pub fn encode_records(layout : RecordLayout, rows : Array[Map[String, CellValue]
 
 要求：`decode → encode` 必须逐字节还原（写往返测试，随机数据 500 条）。
 
+`roundtrip_check(layout, record)` **只比较布局覆盖的前 `layout.byte_length` 字节**
+（C13，2026-11-17 审计）：`decode_record` 接受长于布局的输入（真实文件的
+RDW/BDW 头与自定义尾部填充，见第 7 节 `--record-length`），所以「超出布局长度的
+尾部字节不参与往返比较」——调用方若要连它们一起校验，需先自行切片。此前
+`roundtrip_check` 逐字节比到 `record.length()`，然后因「重编码只有布局长」返回
+`Some(byte_length)`，被读成「第一个不同字节在 N」；`cmd_verify` 自己切片绕开了，
+库级调用方没有。
+
 `compile_layout` 将所有叶子 OCCURS 展开为带下标路径、`occurs == 1` 的字段。
 记录编解码 API 同时保留对手工构造的 `FieldLayout.occurs > 1` 的兼容支持：
 解码生成 `PATH(1)`、`PATH(2)` 等键，编码按相同键逐元素读取。

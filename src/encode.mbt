@@ -1790,16 +1790,28 @@ pub fn roundtrip_check(
     // CLI 会把编码失败说成 "decode failed"，把归因指错方向。
     Err(e) => return Err(EncodeFailed(e.to_display()))
   }
+  // **只比较布局覆盖的前 `byte_length` 字节**（C13，2026-11-17 审计）。
+  //
+  // `decode_record` 接受长于布局的输入（只查过短），因为真实文件里每条记录可能
+  // 带 RDW/BDW 头或自定义尾部填充（API.md §7 的 `--record-length` 语义）。旧实现
+  // 逐字节比到 `record.length()`，然后因 `reencoded.length() != n` 返回
+  // `Some(n)` —— 被读成「第一个不同字节在 N」，实际是「布局之外的字节没被看过」。
+  // CLI 早就自己按 `check_len = min(rec_len, byte_length)` 切片绕开（见
+  // `main.mbt` 的注释），也就是说那条隐含前提只在 CLI 里成立，库级调用方一脚
+  // 就踩进去。现在两边口径一致：布局之外不参与往返比较，调用方需自行切片。
   let n = record.length()
-  for i = 0; i < n && i < reencoded.length(); i = i + 1 {
+  let cover = layout.byte_length
+  let check = if n < cover { n } else { cover }
+  for i = 0; i < check && i < reencoded.length(); i = i + 1 {
     if record[i].to_int() != reencoded[i].to_int() {
       return Ok(Some(i))
     }
   }
-  if reencoded.length() != n {
-    // 两分支原写成相同表达式（审查发现的死分支）：无论谁长，第一个
-    // 不一致的位置都是 n（两者公共前缀已逐字节比对过且无差异）。
-    return Ok(Some(n))
+  if reencoded.length() != check {
+    // encode 恒写 `byte_length` 字节，所以这里只有在记录短于布局时才可能触发
+    // （decode 已经挡过 `record.length() < byte_length`，属防御性分支）。
+    // 无论谁长，第一个不一致的位置都是公共前缀的长度。
+    return Ok(Some(check))
   }
   Ok(None)
 }
