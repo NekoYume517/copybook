@@ -759,6 +759,12 @@ fn compile_field(
       // decode/render/encode 拿到的键名自动一致。
       let leaf_mark = b.leaves.length()
       let all_mark = b.all.length()
+      // 递归期间新增的 REDEFINES 豁免区间（2026-11-17-b 审计）：豁免是在
+      // `compile_field` 处理 REDEFINES 时按**当前元素**的绝对偏移登记的，
+      // 而组级 OCCURS 的摊平发生在递归之后 —— 不把这份区间一起按元素复制，
+      // 第 2..n 个元素的视图就会落进「不同组、重叠、无豁免」的判据里，
+      // 一份合法 copybook 被整个拒收（同一结构去掉 OCCURS 却能通过）。
+      let span_mark = b.exempt_spans.length()
       for child in spec.children {
         let _ = compile_field(b, child, path, groups, group_id, is_redefining)
       }
@@ -798,6 +804,30 @@ fn compile_field(
           }
           // 数组增长了 occurs-1；下一个源条目位置相应后移
           i = i + occurs
+        }
+        // 豁免区间同样按元素复制（2026-11-17-b 审计）：递归期间登记的
+        // `(组 id, 目标起点, 目标终点)` 只对第 1 个元素成立，第 k 个元素的
+        // 同一段存储整体平移 `(k-1)*inner`。只复制本次递归新增的条目
+        // （`span_mark` 之后），外层已登记的区间由外层自己负责平移。
+        let added = b.exempt_spans.length() - span_mark
+        if added > 0 {
+          let mut k = 2
+          while k <= occurs {
+            let shift = (k - 1) * inner
+            let mut j = 0
+            while j < added {
+              let (g, ts, te) = b.exempt_spans[span_mark + j]
+              b.exempt_spans.push(
+                (
+                  g,
+                  checked_offset(ts, shift, "REDEFINES exempt span"),
+                  checked_offset(te, shift, "REDEFINES exempt span"),
+                ),
+              )
+              j = j + 1
+            }
+            k = k + 1
+          }
         }
       }
 
