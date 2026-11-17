@@ -1059,15 +1059,38 @@ fn split_index_suffix(path : String) -> (String, String) {
 /// 仅供测试与 `verify` 自检使用：正常情况下它应当等于 `byte_length`。
 /// REDEFINES 会让总和大于 byte_length（共享字节被数了两次），因此本函数
 /// 按**偏移并集**计算。
+///
+/// **区间先钳在 `[0, byte_length]` 再用 Int64 累加**（C8，2026-11-17 审计）：
+/// 本类型是 `pub(all)`，手工构造的 `offset + total_length` 会在 Int32 里回绕，
+/// 把记录之外的字段算进并集 —— 实测「一个界内 2 字节字段 + 一个
+/// `offset = Int32::MAX` 的字段」的 `byte_length = 0` 布局返回 **2**，与
+/// 「记录内叶子区间并集」的定义直接矛盾（decode/encode 侧同一条加法已在
+/// `b3d2e81` / C1 里改成 widening）。记录之外的字节不属于该并集，钳掉是定义，
+/// 不是宽容。
 pub fn RecordLayout::covered_bytes(self : RecordLayout) -> Int32 {
-  let ivs : Array[(Int32, Int32)] = []
+  let limit = self.byte_length.to_int64()
+  let ivs : Array[(Int64, Int64)] = []
   for f in self.fields {
-    ivs.push((f.offset, f.offset + f.total_length))
+    let s = f.offset.to_int64()
+    let e = s + f.total_length.to_int64()
+    let cs = if s < 0L { 0L } else { s }
+    let ce = if e > limit { limit } else { e }
+    if ce > cs {
+      ivs.push((cs, ce))
+    }
   }
-  ivs.sort_by(fn(x, y) { x.0 - y.0 })
-  let mut covered = 0
-  let mut cur_start = -1
-  let mut cur_end = -1
+  ivs.sort_by(fn(x, y) {
+    if x.0 < y.0 {
+      -1
+    } else if x.0 > y.0 {
+      1
+    } else {
+      0
+    }
+  })
+  let mut covered : Int64 = 0L
+  let mut cur_start : Int64 = -1L
+  let mut cur_end : Int64 = -1L
   for iv in ivs {
     let (s, e) = iv
     if s > cur_end {
@@ -1083,7 +1106,13 @@ pub fn RecordLayout::covered_bytes(self : RecordLayout) -> Int32 {
   if cur_end > cur_start {
     covered = covered + (cur_end - cur_start)
   }
-  covered
+  // 返回值类型是 Int32：钳过 [0, byte_length] 之后仍可能超过 Int32 上界
+  // （byte_length 本身就是 Int32），这里饱和而不是回绕。
+  if covered > 2147483647L {
+    2147483647
+  } else {
+    covered.to_int()
+  }
 }
 
 ///|

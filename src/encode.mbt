@@ -1349,6 +1349,56 @@ fn tail_spec_reaches_record_end(
 }
 
 ///|
+/// 编码前的布局区间校验（C1，2026-11-17 审计）。
+///
+/// **为什么必须有这一道**：`RecordLayout` / `FieldLayout` 是 `pub(all)`，库用户
+/// 可以手工构造 `offset` / `byte_length`，而 `compile_layout` 的溢出检查只覆盖
+/// 它自己算出来的布局。写入侧的 `Writer::set` 是 `self.buf[offset] = …`，越界即
+/// **panic**（数组赋值），不是 `DecodeError` —— 必须与读取侧 `slice_at` 的
+/// `FieldOutOfBounds`（`b3d2e81` 已修）对称。
+///
+/// **为什么入口一处就够（守卫唯一化）**：`Writer` 是 `priv`，唯一构造点是
+/// `encode_record`（`Writer::new(layout.byte_length)`），而所有 `w.set` 只有两类
+/// 来源：
+///   1. `encode_field`：写 `[offset, offset + byte_length)`（手工 OCCURS 逐元素，
+///      末元素上界由本函数的 `occurs * byte_length` 覆盖）；
+///   2. 空洞回填：空洞集来自 `filler_gaps` / `primary_tail_gaps`，两者都是
+///      `complement_gaps(ivs, from, to)` 的输出，结果被钳在 `[from, to]`；
+///      而 `to ≤ byte_length`、`from ≥ 0`（`primary_end` 按
+///      `offset + total_length` 算，本函数已保证它 ≤ `byte_length`）。
+/// 因此只要这道校验通过，本函数内每一次 `w.set` 的下标都落在 `[0, byte_length)`。
+///
+/// 返回 `Some(FieldOutOfBounds)` 表示该字段（或整条记录）不可能落在这条记录里。
+fn check_layout_encode_bounds(layout : RecordLayout) -> DecodeError? {
+  let rec_len = layout.byte_length.to_int64()
+  if rec_len < 0L {
+    return Some(FieldOutOfBounds(layout.name, 0, layout.byte_length))
+  }
+  for f in layout.fields {
+    let start = f.offset.to_int64()
+    // widening：`offset + byte_length` 在 Int32 里回绕会绕过比较
+    // （与 decode 侧 `slice_at` 同一条教训）。
+    let elem = f.byte_length.to_int64()
+    if start < 0L || elem < 0L || start + elem > rec_len {
+      return Some(FieldOutOfBounds(f.path, f.offset, f.byte_length))
+    }
+    // 空洞判定按 `total_length` 记区间（written_intervals），手工 OCCURS 的
+    // 逐元素写入按 `byte_length`：两者取大者，都不许越过记录。
+    let mut span = f.total_length.to_int64()
+    if f.occurs > 1 {
+      let expanded = f.occurs.to_int64() * elem
+      if expanded > span {
+        span = expanded
+      }
+    }
+    if start + span > rec_len {
+      return Some(FieldOutOfBounds(f.path, f.offset, f.total_length))
+    }
+  }
+  None
+}
+
+///|
 /// 编码一条记录。
 ///
 /// 缺失的字段按 `Null` 处理：
@@ -1363,6 +1413,12 @@ pub fn encode_record(
   layout : RecordLayout,
   values : Map[String, CellValue],
 ) -> Result[Bytes, DecodeError] {
+  // **唯一的区间守卫**（C1）：手工布局的越界字段在这里报 FieldOutOfBounds，
+  // 而不是在 Writer::set 里越界 panic。详见 check_layout_encode_bounds 的注释。
+  match check_layout_encode_bounds(layout) {
+    Some(e) => return Err(e)
+    None => ()
+  }
   let w = Writer::new(layout.byte_length)
   for field in layout.fields {
     // compile_layout 已展开 OCCURS；此分支兼容公开结构体手工构造的未展开布局。
