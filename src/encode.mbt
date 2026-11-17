@@ -1367,6 +1367,50 @@ fn tail_spec_reaches_record_end(
 }
 
 ///|
+/// 数值类字段**实际会写出的字节数**（与写入者同源，不是布局公式的副本）。
+///
+/// 用途只有一个：`check_layout_encode_bounds` 的第二条轴（2026-11-17-b 审计）。
+/// 各写入者的宽度来源逐条对应：
+///   - `encode_zoned`   → `field_storage_digits(pic)`，SIGN SEPARATE 再加 1；
+///   - `encode_packed`  → `(field_storage_digits(pic) + 2) / 2`；
+///   - `encode_binary`  → `comp_byte_width(field_storage_digits(pic))`；
+///   - `encode_field` 的 National 分支 → `pic.digits * 2`。
+/// 问题在于它们**都不看 `FieldLayout.byte_length`**，而 byte_length 是另一个
+/// 独立的公开字段：手工布局把两者写成不一致时，唯一那道区间守卫（只看
+/// byte_length）就放行了一次越界写。
+///
+/// 返回 `None` 的三类：
+///   - 文本 / 编辑型：写入宽度恒等于 byte_length（`encode_text` 按 width 补
+///     空格、超长报错），不存在这条轴；
+///   - COMP-1 / COMP-2：`encode_float_bytes` 自己校验 `width != 4/8` 并报
+///     带字段语义的错误，这里不抢它的通道；
+///   - COMP 位数不在 1..18：`encode_binary` 报 `COMP supports at most 18 digits`。
+///
+/// 用 Int64 算宽度：`storage_digits` / `digits` 没有上界（`PicClause` 是
+/// `pub(all)`），`digits * 2` 在 Int32 里会回绕成负数，那样守卫等于没有。
+fn pic_write_width(pic : PicClause) -> Int64? {
+  match pic.category {
+    National => Some(pic.digits.to_int64() * 2L)
+    Numeric =>
+      match pic.usage {
+        Display =>
+          Some(
+            field_storage_digits(pic).to_int64() +
+            (if pic.sign_separate { 1L } else { 0L }),
+          )
+        Comp3 => Some((field_storage_digits(pic).to_int64() + 2L) / 2L)
+        Comp =>
+          match comp_byte_width(field_storage_digits(pic)) {
+            0 => None
+            w => Some(w.to_int64())
+          }
+        Comp1 | Comp2 => None
+      }
+    _ => None
+  }
+}
+
+///|
 /// 编码前的布局区间校验（C1，2026-11-17 审计）。
 ///
 /// **为什么必须有这一道**：`RecordLayout` / `FieldLayout` 是 `pub(all)`，库用户
@@ -1375,11 +1419,21 @@ fn tail_spec_reaches_record_end(
 /// **panic**（数组赋值），不是 `DecodeError` —— 必须与读取侧 `slice_at` 的
 /// `FieldOutOfBounds`（`b3d2e81` 已修）对称。
 ///
+/// **两条轴，缺一条都不成立**（第二条是 2026-11-17-b 审计补的）：
+///   1. `[offset, offset + byte_length)` / `[offset, offset + occurs*len)` 必须
+///      落在记录内；
+///   2. 数值类字段**按 PIC 算出的写入宽度**必须不超过 `byte_length`
+///      （`pic_write_width`）。只查 ① 是不够的：`encode_zoned` / `encode_packed`
+///      / `encode_binary` / National 分支的宽度来自 PIC，不看 byte_length，
+///      于是 `{offset: 0, byte_length: 1, pic: 9(8) DISPLAY}` 通过 ① 之后
+///      仍然越界写 —— 记录正好那么长时 panic，记录更长时**静默写脏后面的
+///      字段**。这正是「上一轮的守卫只覆盖了一个轴」的镜像缺口。
+///
 /// **为什么入口一处就够（守卫唯一化）**：`Writer` 是 `priv`，唯一构造点是
 /// `encode_record`（`Writer::new(layout.byte_length)`），而所有 `w.set` 只有两类
 /// 来源：
-///   1. `encode_field`：写 `[offset, offset + byte_length)`（手工 OCCURS 逐元素，
-///      末元素上界由本函数的 `occurs * byte_length` 覆盖）；
+///   1. `encode_field`：写 `[offset, offset + 写入宽度)`（手工 OCCURS 逐元素，
+///      末元素上界由本函数的 ① 覆盖，写宽由 ② 覆盖）；
 ///   2. 空洞回填：空洞集来自 `filler_gaps` / `primary_tail_gaps`，两者都是
 ///      `complement_gaps(ivs, from, to)` 的输出，结果被钳在 `[from, to]`；
 ///      而 `to ≤ byte_length`、`from ≥ 0`（`primary_end` 按
@@ -1399,6 +1453,14 @@ fn check_layout_encode_bounds(layout : RecordLayout) -> DecodeError? {
     let elem = f.byte_length.to_int64()
     if start < 0L || elem < 0L || start + elem > rec_len {
       return Some(FieldOutOfBounds(f.path, f.offset, f.byte_length))
+    }
+    // 第二条轴：写入者按 PIC 算宽度，可能比字段声明的 byte_length 更宽。
+    match pic_write_width(f.pic) {
+      Some(w) =>
+        if w > elem {
+          return Some(FieldOutOfBounds(f.path, f.offset, f.byte_length))
+        }
+      None => ()
     }
     // 空洞判定按 `total_length` 记区间（written_intervals），手工 OCCURS 的
     // 逐元素写入按 `byte_length`：两者取大者，都不许越过记录。
