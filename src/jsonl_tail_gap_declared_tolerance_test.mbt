@@ -30,7 +30,8 @@ test "C7: a tail geometry shorter than the current gap means a view went null" {
   // 被省略的 [6,8) 没有旧字节可恢复。
   let line = "{\"R.A\":\"AB\",\"R.M\":\"CD\",\"R.V2\":\"CDEF\",\"R.V4\":null,\"__tail_hex\":\"f7f8\",\"__tail_gap\":[[8,10]]}"
   match parse_jsonl_row(layout, line) {
-    Err(e) => fail("this row is a declared-tolerated shape, it must parse: \{e}")
+    Err(e) =>
+      fail("this row is a declared-tolerated shape, it must parse: \{e}")
     Ok(row) =>
       match encode_record(layout, row) {
         Err(e) =>
