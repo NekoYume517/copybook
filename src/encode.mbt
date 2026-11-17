@@ -642,6 +642,12 @@ fn encode_field(
   let pic = field.pic
   let offset = field.offset
   let length = field.byte_length
+  // 与 decode 同一条 PIC scale 守卫（C11）：`as_text(Decimal)` 会走
+  // `Decimal::to_string`，`as_decimal` 会走 `align_scale`，两者都按 scale 循环。
+  match check_pic_scale(offset, pic) {
+    Some(e) => return Err(e)
+    None => ()
+  }
   // 取值顺序统一收敛在 `field_value`（C4）：完整路径 → 裸路径 → 裸名，
   // 且裸键只服务第一个元素。手写 JSON 的宽容度与 render_jsonl /
   // parse_jsonl_row / field_will_write 完全同源。

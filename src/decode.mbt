@@ -289,6 +289,38 @@ fn hex_digit(v : Int32) -> String {
 }
 
 ///|
+/// 十进制 `scale` 的合理上限（C11，2026-11-17 审计）。
+///
+/// **依据**：PIC 的存储位数上限是 18（`parser.mbt` 的总位数检查，前导/尾随 `P`
+/// 缩放位也计入这个上限），所以任何 **parser 可达**的 pic 都满足
+/// `|scale| <= 18`。`PicClause` / `FieldLayout` / `RecordLayout` 都是 `pub(all)`，
+/// 手写 `scale` 没有任何约束，而 `Decimal::to_string` 按 scale 逐位补零
+/// （`for i < scale - digits.length() + 1`）：
+///   - `scale = 2_000_000_000` → 十亿次字符串追加（挂死形态，无错误可循）；
+///   - `scale = Int32::MIN`   → `-self.scale` 自身回绕成负数，循环一次不跑，
+///     静默输出一个**没有小数部分**的错误字符串（比挂死更坏：看起来正常）。
+///
+/// **守卫位置**：放在「从 `PicClause` 产出 / 消费 `Decimal`」的入口
+/// （`decode_field` / `encode_field`），不放进 `to_string`（它返回 `String`，
+/// 无法报错）。手写 `Decimal`（不经 PicClause）直接调 `to_string` 的路径见
+/// REPORT 的遗留一节。
+const MAX_DECIMAL_SCALE : Int32 = 18
+
+///|
+/// PIC 的 scale 是否落在可支持区间（C11）。越界返回带位置的 `InvalidNumeric`。
+fn check_pic_scale(offset : Int32, pic : PicClause) -> DecodeError? {
+  if pic.scale > MAX_DECIMAL_SCALE || pic.scale < -MAX_DECIMAL_SCALE {
+    return Some(
+      InvalidNumeric(
+        offset,
+        "PIC scale \{pic.scale} is outside the supported range [-18, 18] (COBOL allows at most 18 digits, P included); a hand-built PicClause with a larger scale has no meaningful byte layout and would make decimal rendering spin",
+      ),
+    )
+  }
+  None
+}
+
+///|
 /// 从 `BytesView` 里取一段，越界返回 `None`（调用方转 FieldOutOfBounds）。
 fn slice_at(record : BytesView, offset : Int32, length : Int32) -> BytesView? {
   if offset < 0 || length < 0 {
@@ -856,6 +888,12 @@ fn decode_field(
 ) -> Result[CellValue, DecodeError] {
   let offset = field.offset
   let length = field.byte_length
+  // PIC 的 scale 合理域（C11）：手工 PicClause 的荒谬 scale 会让十进制渲染
+  // 十亿级空转（或 Int32::MIN 取负回绕后静默出错值），在产出 Decimal 之前拦住。
+  match check_pic_scale(offset, field.pic) {
+    Some(e) => return Err(e)
+    None => ()
+  }
   let bytes = match slice_at(record, offset, length) {
     Some(v) => v
     None => return Err(FieldOutOfBounds(field.name, offset, length))
