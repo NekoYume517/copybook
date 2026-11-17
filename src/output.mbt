@@ -361,7 +361,12 @@ pub fn render_table(
   let fields = layout.fields
   let ncol = fields.length()
   if ncol == 0 {
-    return ""
+    // **全 FILLER 布局要能辨识**（C12，2026-11-17 审计）：`01 R. 05 FILLER
+    // PIC X(4).` 是合法布局（`byte_length = 4`、`fields` 为空），JSONL 路径由
+    // `__filler_hex` 承载（`all_filler_test.mbt` 已锁）。表格是给人看的输出，
+    // 返回空串会让 CLI 打印一个空行、exit 0 —— 与「没有记录 / 命令没生效」
+    // 不可区分。给一行说明并保留 exit 0（布局合法、解码成功，不是错误）。
+    return "(no value fields; \{layout.byte_length} byte(s) of FILLER)\n"
   }
   let sb = StringBuilder()
   // 列宽：表头 vs 所有单元格
