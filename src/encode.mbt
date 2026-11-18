@@ -468,6 +468,25 @@ pub fn align_scale(
   expected : Int32,
   offset : Int32,
 ) -> Result[Decimal, DecodeError] {
+  // Decimal 也是公开手工输入，不能假设它经过 parser / check_pic_scale。
+  // 在任何差值循环前同域拦截：零系数不会触发逐位精度错误，2^31 量级
+  // 的 scale 会让 while 空转；MIN 也不能靠取反或差值计算处理。
+  if d.scale < -MAX_DECIMAL_SCALE || d.scale > MAX_DECIMAL_SCALE {
+    return Err(
+      InvalidNumeric(
+        offset,
+        "Decimal scale \{d.scale} outside supported range [-18, 18]",
+      ),
+    )
+  }
+  if expected < -MAX_DECIMAL_SCALE || expected > MAX_DECIMAL_SCALE {
+    return Err(
+      InvalidNumeric(
+        offset,
+        "expected scale \{expected} outside supported range [-18, 18]",
+      ),
+    )
+  }
   if d.scale == expected {
     return Ok(d)
   }
