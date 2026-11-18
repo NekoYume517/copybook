@@ -468,27 +468,22 @@ pub fn align_scale(
   expected : Int32,
   offset : Int32,
 ) -> Result[Decimal, DecodeError] {
-  // Decimal 也是公开手工输入，不能假设它经过 parser / check_pic_scale。
-  // 在任何差值循环前同域拦截：零系数不会触发逐位精度错误，2^31 量级
-  // 的 scale 会让 while 空转；MIN 也不能靠取反或差值计算处理。
-  if d.scale < -MAX_DECIMAL_SCALE || d.scale > MAX_DECIMAL_SCALE {
-    return Err(
-      InvalidNumeric(
-        offset,
-        "Decimal scale \{d.scale} outside supported range [-18, 18]",
-      ),
-    )
-  }
-  if expected < -MAX_DECIMAL_SCALE || expected > MAX_DECIMAL_SCALE {
-    return Err(
-      InvalidNumeric(
-        offset,
-        "expected scale \{expected} outside supported range [-18, 18]",
-      ),
-    )
-  }
+  // Decimal 的公开值域不等于 PicClause 的 [-18,18] 子域：任意相同 scale
+  // 都必须恒等返回，不能为了防循环拒绝合法的 1e-19 等值。
   if d.scale == expected {
     return Ok(d)
+  }
+  // 零在乘除任意次 10 后仍是零。先短路既保持旧结果，又避免极端 scale
+  // 形成数十亿次空转。非零 Int64 在乘法方向最多约 19 步即溢出，在除法
+  // 方向最多约 19 步即遇到非零低位，因此无需限制 Decimal 的合法值域。
+  if d.coefficient == 0L {
+    return Ok(Decimal::{
+      coefficient: 0L,
+      scale: expected,
+      negative: d.negative,
+      sign_nibble: d.sign_nibble,
+      pad_nibble: d.pad_nibble,
+    })
   }
   if d.scale < expected {
     let mut coef = d.coefficient
@@ -873,28 +868,26 @@ fn encode_float_bytes(
     FloatRaw(f, _) => f
     Int(i) => i.to_double()
     Decimal(dd) => {
-      // C11 的同域入口闸门：check_pic_scale 只能约束 FieldLayout.pic，公开
-      // Decimal::from_parts 仍可带入任意 scale。必须在 -scale / pow10 之前拒绝，
-      // 否则 MIN 会回绕，极大正 scale 会让 pow10 循环数十亿次。PIC 的总位数
-      // 上限是 18，所以 [-18, 18] 覆盖全部 parser 可达值且不拒绝正常输入。
-      if dd.scale < -MAX_DECIMAL_SCALE || dd.scale > MAX_DECIMAL_SCALE {
-        return Err(
-          InvalidNumeric(
-            offset,
-            "Decimal scale \{dd.scale} outside supported range [-18, 18]",
-          ),
-        )
-      }
       // Decimal 的值是 coefficient × 10^(-scale)：正 scale 要除，负 scale
-      // （与 PIC 尾随 P 同义）要乘。旧代码恒除，123E2 会静默变成 123。
-      // The coefficient is a magnitude; negative is the authoritative sign.
-      // Negating zero explicitly retains its floating-point sign bit.
+      // （与 PIC 尾随 P 同义）要乘。公开 Decimal 的合法 scale 不受 PicClause
+      // 的 [-18,18] 限制，scale=19 的 1e-19 等值必须照常编码。
       let coefficient = dd.coefficient.to_double().abs()
-      let magnitude = if dd.scale < 0 {
+      // pow10(308) 有限、pow10(309) 为 Infinity。零先短路，避免 0*Infinity
+      // 变成 NaN；非零超出边界时直接与旧除/乘结果同为 zero / Infinity。
+      // 中间区间最多循环 308 次，MIN 也无需取反，正常范围舍入路径不变。
+      let magnitude = if coefficient == 0.0 {
+        0.0
+      } else if dd.scale > 308 {
+        0.0
+      } else if dd.scale < -308 {
+        1.0 / 0.0
+      } else if dd.scale < 0 {
         coefficient * pow10(-dd.scale)
       } else {
         coefficient / pow10(dd.scale)
       }
+      // The coefficient is a magnitude; negative is the authoritative sign.
+      // Negating zero explicitly retains its floating-point sign bit.
       if dd.negative {
         -magnitude
       } else {
