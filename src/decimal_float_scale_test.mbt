@@ -21,3 +21,24 @@ test "Decimal with negative scale keeps its magnitude in every float mode and wi
     }
   }
 }
+
+///|
+test "float Decimal input rejects scales outside the parser-reachable domain" {
+  // PicClause 的 C11 闸门管不到公开 Decimal::from_parts。MIN 会在 -scale
+  // 时回绕；19 已越界但足够小，旧实现会迅速成功而不是在红灯阶段挂死。
+  // 修复后再把 2_000_000_000 纳入同一回归：它必须被入口立即拒绝，绝不能
+  // 进入 pow10 的线性循环（旧代码上不可直接运行这个输入）。
+  for scale in [-2147483648, 19, 2000000000] {
+    for usage in ["COMP-1", "COMP-2"] {
+      let layout = compile_layout(
+        parse_copybook("01 R.\n  05 A USAGE \{usage}.\n"),
+      )
+      let row : Map[String, CellValue] = Map([])
+      row["R.A"] = Decimal(Decimal::from_parts(123L, scale, false))
+      match encode_record(layout, row) {
+        Err(e) => assert_true(e.to_display().contains("scale"))
+        Ok(_) => fail("Decimal scale \{scale} must be rejected at float entry")
+      }
+    }
+  }
+}

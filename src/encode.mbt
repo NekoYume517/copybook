@@ -854,6 +854,18 @@ fn encode_float_bytes(
     FloatRaw(f, _) => f
     Int(i) => i.to_double()
     Decimal(dd) => {
+      // C11 的同域入口闸门：check_pic_scale 只能约束 FieldLayout.pic，公开
+      // Decimal::from_parts 仍可带入任意 scale。必须在 -scale / pow10 之前拒绝，
+      // 否则 MIN 会回绕，极大正 scale 会让 pow10 循环数十亿次。PIC 的总位数
+      // 上限是 18，所以 [-18, 18] 覆盖全部 parser 可达值且不拒绝正常输入。
+      if dd.scale < -MAX_DECIMAL_SCALE || dd.scale > MAX_DECIMAL_SCALE {
+        return Err(
+          InvalidNumeric(
+            offset,
+            "Decimal scale \{dd.scale} outside supported range [-18, 18]",
+          ),
+        )
+      }
       // Decimal 的值是 coefficient × 10^(-scale)：正 scale 要除，负 scale
       // （与 PIC 尾随 P 同义）要乘。旧代码恒除，123E2 会静默变成 123。
       // The coefficient is a magnitude; negative is the authoritative sign.
