@@ -854,9 +854,16 @@ fn encode_float_bytes(
     FloatRaw(f, _) => f
     Int(i) => i.to_double()
     Decimal(dd) => {
+      // Decimal 的值是 coefficient × 10^(-scale)：正 scale 要除，负 scale
+      // （与 PIC 尾随 P 同义）要乘。旧代码恒除，123E2 会静默变成 123。
       // The coefficient is a magnitude; negative is the authoritative sign.
       // Negating zero explicitly retains its floating-point sign bit.
-      let magnitude = dd.coefficient.to_double().abs() / pow10(dd.scale)
+      let coefficient = dd.coefficient.to_double().abs()
+      let magnitude = if dd.scale < 0 {
+        coefficient * pow10(-dd.scale)
+      } else {
+        coefficient / pow10(dd.scale)
+      }
       if dd.negative {
         -magnitude
       } else {
