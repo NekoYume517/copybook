@@ -312,21 +312,26 @@ fn encode_binary(
   // 显示路径）。zoned/packed 都按位数拒绝，COMP 不能例外。
   let bits = width * 8
   let limit : Int64 = if width < 8 { 1L << (bits - 1) } else { 0L }
-  let coef = d.coefficient
+  let declared_coef = d.coefficient
   // comp_byte_width 已验证 total 在 1..18 内，10^18 仍可由 Int64 精确表示。
   // 十进制容量独立于二进制容器宽度：8 字节能容纳 19 位，不代表 PIC 允许。
   let mut dec_limit : Int64 = 1L
   for i = 0; i < total; i = i + 1 {
     dec_limit = dec_limit * 10L
   }
-  if coef >= dec_limit || coef <= -dec_limit {
+  if declared_coef >= dec_limit || declared_coef <= -dec_limit {
     return Err(
       InvalidNumeric(
         offset,
-        "value \{coef} exceeds \{field_storage_digits(pic)} decimal digits (field holds at most \{dec_limit - 1})",
+        "value \{declared_coef} exceeds \{field_storage_digits(pic)} decimal digits (field holds at most \{dec_limit - 1})",
       ),
     )
   }
+  // coefficient 是幅值载体，negative 才是符号权威。公开 from_parts 允许
+  // coefficient < 0 且 negative = false；to_string / zoned / packed / float
+  // 都把它解释为正数，COMP 不能直接把这个负系数写进补码。上面的容量检查
+  // 已拒绝 |Int64::MIN|（19 位），所以这里取绝对值不会溢出。
+  let coef = if declared_coef < 0L { -declared_coef } else { declared_coef }
   if pic.signed {
     if width < 8 && d.negative && coef > limit {
       return Err(
