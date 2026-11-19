@@ -855,46 +855,14 @@ fn json_kind_name(j : Json) -> String {
 /// 由调用方保持原有的宽容行为（把错误留给编码层报）。
 fn parse_decimal_with_scale(s : String, pic : PicClause) -> Decimal? {
   match parse_decimal_text(s) {
-    Some(d) => {
-      let want = pic.scale
-      if d.scale == want {
-        Some(d)
-      } else if d.scale < want {
-        let mut coef = d.coefficient
-        let mut k = d.scale
-        while k < want {
-          if coef > 922337203685477580L || coef < -922337203685477580L {
-            return None
-          }
-          coef = coef * 10L
-          k = k + 1
-        }
-        Some(Decimal::{
-          coefficient: coef,
-          scale: want,
-          negative: d.negative,
-          sign_nibble: None,
-          pad_nibble: None,
-        })
-      } else {
-        let mut coef = d.coefficient
-        let mut k = d.scale
-        while k > want {
-          if coef % 10L != 0L {
-            return None
-          }
-          coef = coef / 10L
-          k = k - 1
-        }
-        Some(Decimal::{
-          coefficient: coef,
-          scale: want,
-          negative: d.negative,
-          sign_nibble: None,
-          pad_nibble: None,
-        })
+    // 与 encode 的 Decimal 入口共用同一套恒等、零系数及溢出处理。
+    // 这里不能复制一份按目标 scale 迭代的循环：PicClause 可手工构造，
+    // 巨大 scale 配零系数会让 JSONL 解析在 encode 的 PIC 守卫前挂死。
+    Some(d) =>
+      match align_scale(d, pic.scale, 0) {
+        Ok(aligned) => Some(aligned)
+        Err(_) => None
       }
-    }
     None => None
   }
 }
