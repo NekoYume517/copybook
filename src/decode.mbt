@@ -1094,6 +1094,12 @@ fn decode_record_impl(
   record : BytesView,
   strict : Bool,
 ) -> Result[Map[String, CellValue], DecodeError] {
+  // 两个方向共享同一份公开布局边界与 OCCURS 跨度校验。特别是
+  // total_length < byte_length 不能让 decode 成功而 encode 才失败。
+  match check_layout_encode_bounds(layout) {
+    Some(e) => return Err(e)
+    None => ()
+  }
   if record.length() < layout.byte_length {
     return Err(RecordTooShort(layout.byte_length, record.length()))
   }

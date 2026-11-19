@@ -1499,16 +1499,11 @@ fn check_layout_encode_bounds(layout : RecordLayout) -> DecodeError? {
         }
       None => ()
     }
-    // 空洞判定按 `total_length` 记区间（written_intervals），手工 OCCURS 的
-    // 逐元素写入按 `byte_length`：两者取大者，都不许越过记录。
-    let mut span = f.total_length.to_int64()
-    if f.occurs > 1 {
-      let expanded = f.occurs.to_int64() * elem
-      if expanded > span {
-        span = expanded
-      }
-    }
-    if start + span > rec_len {
+    // total_length 是公开布局不变量 byte_length * occurs。只检查上界会让
+    // 零/负跨度通过：写字段后，空洞判定却把同一区间重新交给原始快照。
+    let span = f.total_length.to_int64()
+    let expanded = f.occurs.to_int64() * elem
+    if f.occurs < 1 || span != expanded || start + span > rec_len {
       return Some(FieldOutOfBounds(f.path, f.offset, f.total_length))
     }
   }
