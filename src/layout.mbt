@@ -112,6 +112,16 @@ pub(all) struct RecordLayout {
 /// | 任意 + SEPARATE  | Display | +1                              |
 ///
 /// `digits` 对数值类是**整数位**，对字符类是**字符数**；总位数 = digits + scale。
+fn checked_pic_width(width : Int64, pic : PicClause) -> Int32 raise ParseError {
+  if width < 0L || width > 2147483647L {
+    raise InvalidLayout(
+      "PIC \{pic.pic_text}: storage width \{width} is outside the Int32 range",
+    )
+  }
+  width.to_int()
+}
+
+///|
 fn pic_byte_length(pic : PicClause) -> Int32 raise ParseError {
   // C10：存储位数用 storage_digits（P 不占存储）；数值语义的总位数
   // （digits + scale，含 P 的隐含位）只用于容量校验。
@@ -122,7 +132,7 @@ fn pic_byte_length(pic : PicClause) -> Int32 raise ParseError {
       guard pic.scale == 0 else {
         raise InvalidLayout("PIC N: scale must be 0, got scale=\{pic.scale}")
       }
-      pic.digits * 2
+      checked_pic_width(pic.digits.to_int64() * 2L, pic)
     }
     Alphabetic | Alphanumeric => {
       guard pic.scale == 0 else {
@@ -155,12 +165,14 @@ fn pic_byte_length(pic : PicClause) -> Int32 raise ParseError {
       match pic.usage {
         Display => {
           // zoned decimal：每一位一个字节，符号盖在最后一字节的高半字节上。
-          let base = total_digits
-          if pic.sign_separate {
-            base + 1
+          // 手工 PicClause 的 storage_digits 可以接近 Int32 上限，必须先提升
+          // 再加独立符号字节，否则负宽度会逃过 OCCURS 的乘法上界检查。
+          let width = if pic.sign_separate {
+            total_digits.to_int64() + 1L
           } else {
-            base
+            total_digits.to_int64()
           }
+          checked_pic_width(width, pic)
         }
         Comp => {
           let width = comp_byte_width(total_digits)
@@ -173,7 +185,7 @@ fn pic_byte_length(pic : PicClause) -> Int32 raise ParseError {
         }
         // 打包十进制：两个数字挤一字节，末尾半字节放符号 →
         // 需要 total_digits + 1 个半字节，向上取整到字节。
-        Comp3 => (total_digits + 2) / 2
+        Comp3 => checked_pic_width((total_digits.to_int64() + 2L) / 2L, pic)
         Comp1 => 4
         Comp2 => 8
       }
