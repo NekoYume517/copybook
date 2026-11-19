@@ -375,6 +375,7 @@ pub fn parse_jsonl_row(
             }
             // 非有限值先于 parse_double：`parse_double("NaN")` 抛异常，catch
             // 兜底给 0.0 会让 NaN 误判成「编辑成 0」而丢掉整条旁路。
+            let mut valid_float_text = true
             let f : Double = match value_text {
               None => 0.0
               Some(text) =>
@@ -386,7 +387,10 @@ pub fn parse_jsonl_row(
                   -1.0 / 0.0
                 } else {
                   try @string.parse_double(text) catch {
-                    _ => 0.0
+                    _ => {
+                      valid_float_text = false
+                      0.0
+                    }
                   } noraise {
                     x => x
                   }
@@ -446,12 +450,19 @@ pub fn parse_jsonl_row(
             // 真值，行里既然没给数值，就按声明的字节原样写回 —— 与
             // `__tail_hex` / `__filler_hex` 无条件还原同一规则。有值时才走
             // 「值一致保留旁路、值被编辑则编辑生效」的判定。
-            let consistent = (f.is_nan() && byte_value.is_nan()) ||
-              f == byte_value
+            let consistent = valid_float_text &&
+              ((f.is_nan() && byte_value.is_nan()) || f == byte_value)
             if value_text is None {
               out[field.path] = FloatRaw(byte_value, bs)
             } else if consistent {
               out[field.path] = FloatRaw(f, bs)
+            } else if !valid_float_text {
+              // 非法文本没有可与旁路比较的数值。保留 Text，让 encode_float
+              // 走既有的显式错误；catch 用的占位 0.0 绝不能取得字节真值。
+              match value_text {
+                Some(text) => out[field.path] = Text(text)
+                None => ()
+              }
             } else {
               // 编辑后的值：丢弃过时旁路，按文本数值走普通 Float 编码。
               // 无声丢弃这里是**正确**语义（用户的编辑优先），与 NEW-6 的
