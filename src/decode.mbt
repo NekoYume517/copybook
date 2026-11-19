@@ -434,6 +434,13 @@ fn decode_zoned(
   let mut embedded_negative = false
   // 记录实际读到的符号半字节，供 encode 原样写回（0xC 与 0xF 同为正号但字节不同）
   let mut sign_nib : Int32? = None
+  // 独立前导符号占 offset 0；digit_bytes[0] 对应原记录的 offset 1。
+  // 其余形态保持原偏移，避免数字半字节错误指到前一个字节。
+  let digit_offset = if sign_separate && sign_leading {
+    base_offset + 1
+  } else {
+    base_offset
+  }
   for i = 0; i < dn; i = i + 1 {
     let b = digit_bytes[i].to_int()
     let lo = b & 0xF
@@ -441,7 +448,7 @@ fn decode_zoned(
     if lo > 9 {
       return Err(
         InvalidNumeric(
-          base_offset + i,
+          digit_offset + i,
           "zoned digit nibble is 0x\{hex_digit(lo)}, expected 0..9 (byte 0x\{hex2(b)})",
         ),
       )
@@ -464,7 +471,7 @@ fn decode_zoned(
         _ =>
           return Err(
             InvalidNumeric(
-              base_offset + i,
+              digit_offset + i,
               "zoned sign nibble is 0x\{hex_digit(hi)}, expected C/D/F (byte 0x\{hex2(b)})",
             ),
           )
@@ -473,7 +480,7 @@ fn decode_zoned(
     } else if hi != 0xF {
       return Err(
         InvalidNumeric(
-          base_offset + i,
+          digit_offset + i,
           "zoned zone nibble is 0x\{hex_digit(hi)}, expected F (byte 0x\{hex2(b)})",
         ),
       )
@@ -483,7 +490,7 @@ fn decode_zoned(
     if coef > (9223372036854775807L - lo.to_int64()) / 10L {
       return Err(
         InvalidNumeric(
-          base_offset + i,
+          digit_offset + i,
           "zoned decimal exceeds supported Int64 magnitude",
         ),
       )

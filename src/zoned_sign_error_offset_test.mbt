@@ -95,3 +95,17 @@ test "zoned reverse lock: a separate TRAILING sign byte still points at the end"
   assert_true(msg.contains("offset 3"))
   assert_true(msg.contains("0x60"))
 }
+
+///|
+test "zoned: separate LEADING digit errors skip the sign byte offset" {
+  let msg = zseo_manual(true, true, [0x4E, 0xF1, 0xFA, 0xF3])
+  assert_true(msg.contains("offset 2"))
+  assert_true(msg.contains("0xFA"))
+}
+
+///|
+test "zoned reverse lock: separate TRAILING digit offsets stay unchanged" {
+  let msg = zseo_manual(false, true, [0xF1, 0xFA, 0xF3, 0x4E])
+  assert_true(msg.contains("offset 1"))
+  assert_true(msg.contains("0xFA"))
+}
