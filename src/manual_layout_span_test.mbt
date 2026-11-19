@@ -64,3 +64,38 @@ test "valid layout still lets an edited field beat its stale byte snapshot" {
     Err(e) => fail("valid edited layout was rejected: \{e.to_display()}")
   }
 }
+
+///|
+test "Map tail-gap bypass cannot wrap an absolute offset into the record" {
+  let base = mls_layout(2)
+  let view = { ..base.fields[1], byte_length: 4, total_length: 4, }
+  let layout = {
+    ..base,
+    byte_length: 4,
+    fields: [base.fields[0], view],
+    all_fields: [base.fields[0], view],
+  }
+  let wrapped : Map[String, CellValue] = Map([
+    ("R.A", Text("AB")),
+    ("R.B", Null),
+    ("__tail_gap", Text("4294967298:4294967300")),
+    ("__tail_hex", Bytes(b"\xF1\xF2")),
+  ])
+  match encode_record(layout, wrapped) {
+    Err(InvalidBypass(_)) => ()
+    Err(e) => fail("wrapped gap returned the wrong error: \{e.to_display()}")
+    Ok(bytes) =>
+      fail("wrapped gap wrote an in-record byte: \{bytes.to_array()}")
+  }
+  let valid : Map[String, CellValue] = Map([
+    ("R.A", Text("AB")),
+    ("R.B", Null),
+    ("__tail_gap", Text("2:4")),
+    ("__tail_hex", Bytes(b"\xF1\xF2")),
+  ])
+  match encode_record(layout, valid) {
+    Ok(bytes) =>
+      assert_eq(bytes.to_array(), [b'\xC1', b'\xC2', b'\xF1', b'\xF2'])
+    Err(e) => fail("valid in-range gap geometry regressed: \{e.to_display()}")
+  }
+}

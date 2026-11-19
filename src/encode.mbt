@@ -1282,7 +1282,11 @@ fn parse_gap_offset(text : String) -> Int32? {
     if c < '0' || c > '9' {
       return None
     }
-    v = v * 10 + (c.to_int() - '0'.to_int())
+    let digit = c.to_int() - '0'.to_int()
+    if v > 214748364 || (v == 214748364 && digit > 7) {
+      return None
+    }
+    v = v * 10 + digit
   }
   Some(v)
 }
