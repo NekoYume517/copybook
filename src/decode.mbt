@@ -925,6 +925,15 @@ fn decode_field(
     None => return Err(FieldOutOfBounds(field.name, offset, length))
   }
   let pic = field.pic
+  // RecordLayout 可公开手工构造。数值解码与 encode 必须使用同一份 PIC
+  // 存储宽度，而不能按 slot 全长读出另一个 encode 会拒绝的布局。
+  match pic_write_width(pic) {
+    Some(w) =>
+      if w != length.to_int64() {
+        return Err(FieldOutOfBounds(field.name, offset, length))
+      }
+    None => ()
+  }
   match pic.category {
     National => {
       if length % 2 != 0 {

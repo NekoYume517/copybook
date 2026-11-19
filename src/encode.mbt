@@ -1490,10 +1490,11 @@ fn check_layout_encode_bounds(layout : RecordLayout) -> DecodeError? {
     if start < 0L || elem < 0L || start + elem > rec_len {
       return Some(FieldOutOfBounds(f.path, f.offset, f.byte_length))
     }
-    // 第二条轴：写入者按 PIC 算宽度，可能比字段声明的 byte_length 更宽。
+    // 第二条轴：数值写入者按 PIC 算宽度。它与 slot 不一致时，decode 也会
+    // 拒绝同一布局；slot 更宽不能放行，否则两个方向接受的公开布局不同域。
     match pic_write_width(f.pic) {
       Some(w) =>
-        if w > elem {
+        if w != elem {
           return Some(FieldOutOfBounds(f.path, f.offset, f.byte_length))
         }
       None => ()
