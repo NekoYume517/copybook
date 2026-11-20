@@ -245,8 +245,9 @@ pub(all) enum CellValue {
   Int(Int64)
   Decimal(Decimal)      // 定点小数，见下
   Bool(Bool)
-  Bytes(Bytes)
+  Bytes(Bytes)          // 旁路键载体（__record_bytes / __tail_hex / __filler_hex）；不是字段值
   Float(Double)         // COMP-1 / COMP-2 的值（字节表示见 float_mode）
+  FloatRaw(Double, Bytes)  // 追加（CB-21）：浮点近似值 + 原始字节，见 FIDELITY §5.1
 }
 
 /// 浮点字节表示。挂在 RecordLayout 上（数据源属性，不是字段属性）。
@@ -272,6 +273,9 @@ pub(all) enum DecodeError {
   InvalidNumeric(offset : Int, detail : String)
   InvalidEbcdic(offset : Int, byte : Int)
   FieldOutOfBounds(field : String, offset : Int, length : Int)
+  EncodeFailed(detail : String)            // 追加（CB-19）：自检的编码阶段失败
+  InvalidBypass(detail : String)           // 追加（CB-A2）：旁路键字节数与空洞几何不符
+  TextNotEncodable(offset : Int, detail : String)  // 追加（C5）：文本值含 decode 会拒收的码点
 } derive(Debug)
 
 /// 解码一条记录为 Map[字段路径, 值]
@@ -299,6 +303,14 @@ pub fn decode_record_strict(layout : RecordLayout, record : BytesView) -> Result
     消息形如 `data length 5 is not a multiple of record length 4: 1 complete record(s) plus 1 trailing byte(s)`。
     这两种情形含义不同，**不能**都用 `RecordTooShort`（否则一条 4 字节记录会被说成只有 1 字节）。
     `RecordRemainder` 是对本契约的追加（与 `TokenKind::StringLiteral` 同类），不属于签名变更。
+- 公开手工布局只有一份边界判据：`decode_record` / `decode_record_strict` /
+  `decode_record_ordered` / `encode_record` / `roundtrip_check` 都会先校验
+  `RecordLayout` 的跨度不变量（`total_length == byte_length * occurs`、非负
+  偏移、元素跨度落在记录内、PIC 写入宽度与槽位一致）。手建布局越界时五条
+  入口给同一个 `FieldOutOfBounds`，不会出现"某条入口放行"（2026-11-21 审计）。
+- 字符类字段（`X` / `A` / `N` / 编辑型）的值必须是文本/数值单元格；
+  `CellValue::Bytes` 是旁路键（`__record_bytes` / `__tail_hex` /
+  `__filler_hex`）的载体，喂给字段会报 `TextNotEncodable`，不会静默写成空白。
 - COMP 二进制：按字节数用**大端**读取，有符号用补码。**十进制容量按 PIC 声明双向强制**：
   `S9(4) COMP` 的 2 字节容器放得下 32767，但字段声明只有 4 位十进制数，
   所以 decode 与 encode 都会拒绝越界值（报 `InvalidNumeric`，不截断、不静默取值）。
@@ -359,6 +371,14 @@ number（带十进制 repr 原文）。**COMP-1 / COMP-2 的 ±Inf / NaN 不是�
 JSON 字面量**，按 IEEE 754 文本约定输出带引号字符串 `"Infinity"` /
 `"-Infinity"` / `"NaN"`；`parse_jsonl_row` 能把这三个串解回
 `CellValue::Float`。
+
+`render_layout` / `pic_type_name` 的 PIC 数值域（2026-11-21 审计）：
+`|scale| <= 18`（`MAX_DECIMAL_SCALE`）且 `digits` / `storage_digits` 非负
+—— 与 decode/encode 的入口守卫同源。手建 `PicClause` 越域时
+`pic_type_name` 返回 `<PIC out of range: digits=… scale=… storage=…>`、
+`render_layout` 在该行追加 `[PIC: out of supported decimal domain]` 并在
+末尾汇总 WARNING（不再按 scale 逐位展开；`scale=2e9` 曾把报告命令跑到
+进程崩溃，`Int32::MIN` 曾把尾随 P 静默吞掉）。解析器产出的 PIC 恒在域内。
 
 **保留键（`__` 前缀）**：JSONL 行里的这些键不是字段，而是字节保真的旁路
 信息；`parse_jsonl_row` 还原它们，`encode_record` 消费它们。

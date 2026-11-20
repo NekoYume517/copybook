@@ -491,7 +491,8 @@ fn pad_left(s : StringView, width : Int32) -> String {
 ///   2 空格
 ///   OCCURS  右对齐宽度  6
 ///   2 空格
-///   TYPE    左对齐宽度 17  （"S9(7)V99 COMP-3" 长 15，右补 2 空格）`n///   2 空格 → NAME 从第 42 位开始
+///   TYPE    左对齐宽度 16  （"S9(7)V99 COMP-3" 长 15，右补 1 空格）
+///   2 空格 → NAME 从第 42 位开始（24 + 16 + 2）
 ///   NAME    左对齐，无宽度上限
 ///
 /// 标题行：`RECORD: ` + 记录名 + 右填充到第 49 位 + `LENGTH: ` + N + ` bytes`

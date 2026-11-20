@@ -188,7 +188,7 @@ copybook decode --copybook app.cpy --data app.dat --float-mode ieee
 | 多个 `01` 层级 | **并列拼接为一条记录**（见下方说明） |
 | 组级 `USAGE` | ✅ 子项继承 |
 | 组级 `SIGN`（`LEADING` / `SEPARATE`） | ✅ 子项继承（只作用于带符号数值项；叶子上显式写的 SIGN 优先） |
-| `JUSTIFIED RIGHT` / `JUST RIGHT` | ✅ 字符类右对齐（左侧补 `0x40`）；数值与编辑型不受影响 |
+| `JUSTIFIED RIGHT` / `JUST RIGHT` | ✅ 字符类右对齐：`X` / `A` 左侧补 `0x40`、`N` 左侧补 `00 20`；**右对齐字段的尾随空格是数据**（补齐在左侧），decode 不 trim，故 `decode → encode` 仍逐字节一致；数值与编辑型不受影响 |
 
 **编辑型 PIC 的边界**（2026-11-11 审计）：numeric-edited 的存储宽度按
 IBM「Symbols used in the PICTURE clause」计算 —— `V` / `P` / `S` 不占

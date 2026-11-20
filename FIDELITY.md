@@ -107,6 +107,7 @@ IBM HFP 没有 IEEE 那种「负零是特殊值」的语义，但**符号位仍�
 | **REDEFINES 尾部空洞**（只有重定义视图覆盖、且该视图解不出的字节） | `__tail_hex` + `__tail_gap`（JSONL 旁路）/ `__record_bytes`（内存路径） | `FF EE` 被静默改写成 `40 40`；或编辑后快照被写到错误偏移 |
 | **FILLER 中部空洞**（FILLER 区与叶子字段之间的裂缝） | `__filler_hex` + `__filler_gap`（JSONL 旁路）/ `__record_bytes`（内存路径） | `C3 C4` 被静默改写成 `40 40` |
 | **`JUSTIFIED RIGHT` 的对齐方向** | `PicClause.justified_right` | 右对齐字段被写成左对齐：`"AB"` 落盘成 `C1 C2 40 40 40`（应 `40 40 40 C1 C2`），主机读出的值变成 `"AB   "` |
+| **`JUSTIFIED RIGHT` 的尾随空格**（补齐在左侧，尾随 0x40 / `00 20` 是数据） | 右侧 `FieldLayout` 不裁切：`decode` 对 JR 字段不 trim | `40 C1 C2 40 40` 被读成 `" AB"` 再右对齐重排成 `40 40 40 C1 C2`（L1 违约，2026-11-21 修复）；NATIONAL 同形 |
 
 **负零为什么单独列一行**：整数型的 `0` 与 `-0` 数值相等，但 zoned / packed 的符号半字节不同，字节也就不同。走 `decode → JSONL → encode` 时，文本这一环靠不住——JSON 的数字是 double，`-0` 经核心 JSON 词法后原文不保留，放手写的 `-0` 也可能被折叠成 `0`。所以 **JSONL 里的 `__nibbles.sign` 是符号的权威来源**：`0xD` 就是负号，系数为 0 时同样生效。修复前这条旁路只被当作"写回哪个半字节"的提示，`decode` 出 `-0`、`encode` 回 `+0`，而 `verify`（内存路径，`Decimal.negative` 没丢）还报 `byte-identical roundtrip` —— 两条路径互相矛盾。回归测试在 `src/negative_zero_test.mbt`，同时锁定文本链路与 `verify` 两条路径的结论一致。
 
