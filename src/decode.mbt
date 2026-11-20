@@ -710,9 +710,16 @@ fn decode_binary(
 /// 错位问题一路传到下游，所以这里直接报错。
 ///
 /// 只 trim **尾部**空格；前导空格是有效内容（COBOL 字符字段左对齐）。
+///
+/// **JUSTIFIED RIGHT 字段不 trim**（2026-11-21 审计）：右对齐字段的补齐在
+/// **左侧**，尾随 0x40 是被存下来的数据。若照左对齐惯例 trim，`encode`
+/// 会按右对齐重排 —— `40 C1 C2 40 40` 变成 `40 40 40 C1 C2`，L1（逐字节）
+/// 当场破功。全空白字段仍返回 `""`（"没有值"语义不变，两种形态 encode 后
+/// 字节相同）。
 fn decode_text(
   bytes : BytesView,
   base_offset : Int32,
+  justified_right : Bool,
 ) -> Result[String, DecodeError] {
   let n = bytes.length()
   // 先校验字节，再解码 —— 避免把非法字节解码成 FFFD 之后无法定位
@@ -725,8 +732,21 @@ fn decode_text(
   let s = ebcdic_decode(bytes)
   // trim_end：去掉尾部 0x40（EBCDIC 空格）
   let mut end = n
-  while end > 0 && bytes[end - 1].to_int() == 0x40 {
-    end = end - 1
+  if justified_right {
+    let mut all_blank = true
+    for i = 0; i < n; i = i + 1 {
+      if bytes[i].to_int() != 0x40 {
+        all_blank = false
+        break
+      }
+    }
+    if all_blank {
+      end = 0
+    }
+  } else {
+    while end > 0 && bytes[end - 1].to_int() == 0x40 {
+      end = end - 1
+    }
   }
   if end == n {
     Ok(s)
@@ -969,14 +989,28 @@ fn decode_field(
       }
       let text = out.to_string()
       let mut end = text.length()
-      while end > 0 && text[end - 1] == ' ' {
-        end = end - 1
+      if pic.justified_right {
+        // 同 decode_text：右对齐字段的尾随 0x0020 是数据。全空白仍给 ""。
+        let mut all_blank = true
+        for i = 0; i < end; i = i + 1 {
+          if text[i] != ' ' {
+            all_blank = false
+            break
+          }
+        }
+        if all_blank {
+          end = 0
+        }
+      } else {
+        while end > 0 && text[end - 1] == ' ' {
+          end = end - 1
+        }
       }
       Ok(Text(text[:end].to_owned()))
     }
     // 编辑型在存储层是**显示字符**，与 X(n) 一样按文本读。
     Edited | Alphanumeric | Alphabetic =>
-      match decode_text(bytes, offset) {
+      match decode_text(bytes, offset, pic.justified_right) {
         Ok(s) => Ok(Text(s))
         Err(e) => Err(e)
       }
