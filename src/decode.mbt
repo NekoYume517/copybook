@@ -1207,6 +1207,19 @@ pub fn decode_record_ordered(
   layout : RecordLayout,
   record : BytesView,
 ) -> Result[Array[CellValue], DecodeError] {
+  // 与 decode_record / decode_record_strict / encode_record 共享**同一份**
+  // 公开布局边界（C1 + 2026-11-21 审计）：手建布局的跨度不变量
+  // （`total_length == byte_length * occurs`）、非负偏移、PIC 写入宽度与
+  // 槽位一致，五条入口必须是同一个域。旧实现漏了这一道，于是
+  // `occurs=3, total_length=0` 的布局：map/strict/encode/roundtrip 全报
+  // FieldOutOfBounds，只有 `decode_record_ordered` 返回 3 个值。
+  //
+  // 顺带：这一道也让下面 `offset + (k-1) * byte_length` 的 Int32 累乘安全
+  // （跨度不变量成立时 k < occurs，元素偏移必在布局内）。
+  match check_layout_encode_bounds(layout) {
+    Some(e) => return Err(e)
+    None => ()
+  }
   if record.length() < layout.byte_length {
     return Err(RecordTooShort(layout.byte_length, record.length()))
   }
