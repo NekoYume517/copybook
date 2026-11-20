@@ -24,14 +24,14 @@ moon version
 
 ```bash
 moon check     # 类型检查，0 error
-moon test      # 660 个测试，全绿
+moon test      # 727 个测试，全绿
 moon build --target wasm
 ```
 
 预期输出（`moon test`）：
 
 ```
-Total tests: 660, passed: 660, failed: 0.
+Total tests: 727, passed: 727, failed: 0.
 ```
 
 ## 二、看字节布局（这是项目最有说服力的输出）
@@ -191,3 +191,4 @@ moon test
 ## 十、看到这里还没被说服？
 
 `docs/implementation.md` 记录了 8 个实现过程中真实踩到的算术陷阱，每一条都对应一个曾经算错的具体数字（比如 REDEFINES 算出 35、`S9(4) COMP` 曾错算成 1 字节）。这些不是假设性问题，是实际发生并被测试锁住的。
+
