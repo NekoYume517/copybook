@@ -105,13 +105,24 @@ fn parse_options(args : ArrayView[String]) -> Result[Options, String] {
       }
       None => ()
     }
-    // 取值辅助：有 inline 用 inline，否则吃下一个 token
+    // 取值辅助：有 inline 用 inline，否则吃下一个 token。
+    //
+    // **值位不许吞掉另一个选项**（2026-11-21 审计）：`--copybook --data c.dat`
+    // 旧实现把 `--data` 当作 `--copybook` 的值吃掉，随后 `c.dat` 变成
+    // "unknown option 'c.dat'" —— 真正的问题（缺值）被错位诊断掩盖。
+    // 以 `--` 开头的 token 一律视为选项；要传这种路径用内联写法
+    // `--copybook=--weird.cpy`（内联值不经过这里）。单短横线（`-x.cpy`）
+    // 不是选项前缀，照旧当值。
     let take_value = fn() -> Result[String, String] {
       match inline_value {
         Some(v) => Ok(v)
         None =>
           if i + 1 >= n {
             Err("option \{key} requires a value")
+          } else if args[i + 1].has_prefix("--") {
+            Err(
+              "option \{key} requires a value, but the next token '\{args[i + 1]}' looks like another option (use the inline form \{key}=... when the value itself starts with '--')",
+            )
           } else {
             i = i + 1
             Ok(args[i])
