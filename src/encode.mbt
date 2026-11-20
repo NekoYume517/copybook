@@ -631,16 +631,32 @@ fn parse_decimal_text(s : StringView) -> Decimal? {
 
 ///|
 /// 把 `CellValue` 归一化为文本（字符字段用）。
-fn as_text(v : CellValue) -> String {
+///
+/// **`Bytes` 不再静默变成空白**（2026-11-21 审计）：旧实现的 `Bytes(_) => ""`
+/// 让"把原始字节单元格塞进字符字段"默默写成整段 0x40 —— 数值字段同样的输入
+/// 会报错，字符字段却静默丢数据。`Bytes` 是解码器挂在 `__record_bytes` /
+/// `__tail_hex` 这类**保留键**上的载体，不是字段值；喂给字段就是调用错误，
+/// 与"不静默修正"同一条口径。
+fn as_text(
+  v : CellValue,
+  offset : Int32,
+  path : StringView,
+) -> Result[String, DecodeError] {
   match v {
-    Text(s) => s
-    Int(i) => i.to_string()
-    Decimal(d) => d.to_string()
-    Float(f) => f.to_string()
-    FloatRaw(f, _) => f.to_string()
-    Bool(b) => if b { "true" } else { "false" }
-    Null => ""
-    Bytes(_) => ""
+    Text(s) => Ok(s)
+    Int(i) => Ok(i.to_string())
+    Decimal(d) => Ok(d.to_string())
+    Float(f) => Ok(f.to_string())
+    FloatRaw(f, _) => Ok(f.to_string())
+    Bool(b) => Ok(if b { "true" } else { "false" })
+    Null => Ok("")
+    Bytes(_) =>
+      Err(
+        TextNotEncodable(
+          offset,
+          "field '\{path}' received a raw Bytes cell; that value belongs to the reserved bypass keys (__record_bytes / __tail_hex / __filler_hex), not to a field — give a string instead (silently writing blanks here would drop the data)",
+        ),
+      )
   }
 }
 
@@ -716,7 +732,10 @@ fn encode_field(
   match pic.category {
     National => {
       // NATIONAL is UTF-16BE; PIC N counts UTF-16 code units, not scalar values.
-      let text = as_text(v)
+      let text = match as_text(v, offset, field.path) {
+        Ok(t) => t
+        Err(e) => return Err(e)
+      }
       if text.length() > pic.digits {
         return Err(
           InvalidNumeric(offset, "text exceeds NATIONAL code-unit capacity"),
@@ -767,14 +786,22 @@ fn encode_field(
     // 不产生对齐效果，两者按原样编码（编辑型是模式串展开的显示串，右对齐
     // 会破坏小数点/符号的位置）。
     Edited =>
-      match encode_text(w, offset, length, as_text(v), false, field.path) {
-        Ok(_) => Ok(())
+      match as_text(v, offset, field.path) {
+        Ok(text) =>
+          match encode_text(w, offset, length, text, false, field.path) {
+            Ok(_) => Ok(())
+            Err(e) => Err(e)
+          }
         Err(e) => Err(e)
       }
     Alphanumeric | Alphabetic => {
       let jr = pic.justified_right
-      match encode_text(w, offset, length, as_text(v), jr, field.path) {
-        Ok(_) => Ok(())
+      match as_text(v, offset, field.path) {
+        Ok(text) =>
+          match encode_text(w, offset, length, text, jr, field.path) {
+            Ok(_) => Ok(())
+            Err(e) => Err(e)
+          }
         Err(e) => Err(e)
       }
     }
