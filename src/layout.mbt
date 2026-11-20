@@ -241,8 +241,34 @@ fn group_pic(byte_length : Int32) -> PicClause {
 /// 渲染不直接回放 `pic_text`：既有输出是把 `999` 归一化成 `9(3)` 的形式，
 /// 回放原文会让 `PIC 999V9` 从 `9(3)V9` 变成 `999V9`（无关的格式漂移）。
 /// 这里按 digits/scale/storage_digits 反推 P 的位置，归一化风格保持不变。
+///
+/// **数值域守卫**（2026-11-21 审计）：`pic_type_name` 是 `pub`，手建
+/// `PicClause` 是本项目真实存在的入口 —— C11 的 scale 守卫落在
+/// `decode_field` / `encode_field` 两个数据面入口，报告面漏了。同一个
+/// PicClause 在报告面会：
+///
+/// - `scale = 2_000_000_000`：按位展开 P/9 → 十亿次 append，实测 28 秒后
+///   访问越界崩进程（`0xc0000005`），`copybook layout` 类清单直接死；
+/// - `scale = Int32::MIN`：`-scale` 回绕成负数 → 循环零次 → 尾随 P 静默
+///   消失，打印得和 `scale = 0` 一模一样（"看起来正常"的谎报）；
+/// - `storage_digits` 为负且 `digits = 0`：`scale - storage_digits` 溢出成
+///   巨量 P，同样炸。
+///
+/// 越域时不再逐位展开，直接回一行说明（同时 `render_layout` 会追加 WARNING）；
+/// 域与数据面同源：`|scale| <= MAX_DECIMAL_SCALE`（C11）+ 位数非负。
+fn pic_is_reportable(pic : PicClause) -> Bool {
+  pic.scale >= -MAX_DECIMAL_SCALE &&
+  pic.scale <= MAX_DECIMAL_SCALE &&
+  pic.digits >= 0 &&
+  pic.storage_digits >= 0
+}
+
+///|
 pub fn pic_type_name(pic : PicClause) -> String {
   let sb = StringBuilder()
+  if !pic_is_reportable(pic) {
+    return "<PIC out of range: digits=\{pic.digits} scale=\{pic.scale} storage=\{pic.storage_digits}>"
+  }
   match pic.category {
     Alphanumeric => {
       sb.write_string("X(")

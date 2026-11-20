@@ -527,6 +527,7 @@ pub fn render_layout(layout : RecordLayout) -> String {
   sb.write_char('\n')
   // 数据行
   let mut synced_count = 0
+  let mut unreportable_count = 0
   for field in layout.fields {
     sb.write_string(pad_left(field.offset.to_string(), 6))
     sb.write_string("  ")
@@ -537,6 +538,15 @@ pub fn render_layout(layout : RecordLayout) -> String {
     sb.write_string(pad_right(pic_type_name(field.pic), 16))
     sb.write_string("  ")
     sb.write_string(field.path)
+    // **PIC 数值域警告**（2026-11-21 审计）：手建 PicClause 的 scale 越出
+    // [-18, 18] 或位数为负时，`pic_type_name` 不再逐位展开（否则是挂死/
+    // 溢出崩溃，或把尾随 P 静默吞掉），而是回一行 `<PIC out of range>`。
+    // 这里逐行标注 + 末尾汇总，让"这份布局本工具其实不接受"当场可见：
+    // decode/encode 对同一份布局会报 InvalidNumeric。
+    if !pic_is_reportable(field.pic) {
+      unreportable_count = unreportable_count + 1
+      sb.write_string("   [PIC: out of supported decimal domain]")
+    }
     // **SYNC 警告**（NEW-4，2026-11-04 审计）：
     // `SYNC` / `SYNCHRONIZED` 在 IBM 上是**对齐要求**——带 SYNC 的 COMP 字段
     // 必须落在半字/全字边界上，它前面的字段因此可能被填充（记录变长）。
@@ -556,6 +566,12 @@ pub fn render_layout(layout : RecordLayout) -> String {
     sb.write_char('\n')
     sb.write_string(
       "WARNING: \{synced_count} field(s) declare SYNC/SYNCHRONIZED. This subset does not implement IBM half-word/full-word alignment: offsets above are computed without padding, so they differ from what a real z/OS compiler produces. Do not use this layout to read host data containing SYNC fields.\n",
+    )
+  }
+  if unreportable_count > 0 {
+    sb.write_char('\n')
+    sb.write_string(
+      "WARNING: \{unreportable_count} field(s) carry a PIC outside the supported decimal domain (scale beyond [-18, 18] or negative digit counts). decode/encode reject such a layout with InvalidNumeric; their TYPE column above shows the raw triple instead of a PIC type.\n",
     )
   }
   // 去掉末尾多余的换行：报告的行数应当恰好等于 2 + 1 + fields.length()
