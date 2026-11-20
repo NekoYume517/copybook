@@ -746,8 +746,18 @@ fn encode_field(
           i = i + 1
         }
       }
+      // JUSTIFIED RIGHT 同理（CB-B5 的 NATIONAL 入口，2026-11-21 审计）：
+      // 右对齐时补齐是 `00 20` 落在**左侧**。不补而顺序写出会让解析期已
+      // 接受的 `PIC N(n) JUSTIFIED RIGHT` 静默退化成左对齐。
+      let n = text.length()
+      let pad = pic.digits - n
+      let start = if pic.justified_right { pad } else { 0 }
       for i = 0; i < pic.digits; i = i + 1 {
-        let unit = if i < text.length() { text[i].to_int() } else { 0x20 }
+        let unit = if i >= start && i - start < n {
+          text[i - start].to_int()
+        } else {
+          0x20
+        }
         w.set(offset + i * 2, unit >> 8)
         w.set(offset + i * 2 + 1, unit & 0xFF)
       }
