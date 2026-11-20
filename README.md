@@ -174,7 +174,7 @@ copybook decode --copybook app.cpy --data app.dat --float-mode ieee
 | `PIC X(n)` / `A(n)` 字符 | ✅ |
 | `PIC N(n)` 国家字符 | ✅ UTF-16BE；**n 是 UTF-16 码元数**（不是字符数），空位补 U+0020 |
 | `PIC S9(n)V9(m)` 隐含小数 | ✅ |
-| 编辑型 PIC（`ZZ9.99` / `$9,999.99` / `9(5)CR`） | ✅ DISPLAY 文本往返；宽度 = 字符位置数（**V / P / S 不占存储**，插入字符 `$ , . + - / B 0 CR DB *` 各占一位） |
+| 编辑型 PIC（`ZZ9.99` / `$9,999.99` / `9(5)CR`） | ✅ DISPLAY 文本往返；宽度 = 字符位置数（**V / P / S 不占存储**；插入字符 `$ , . + - / B 0 *` 各占 1 位，`CR` / `DB` **各占 2 位** —— IBM PICTURE 符号表，故 `9(5)CR` = 7 字节） |
 | `COMP` / `COMP-4` 二进制 | ✅ |
 | `COMP-3` 打包十进制 | ✅ |
 | `COMP-1` / `COMP-2` 浮点 | ✅ 默认 IBM HFP；`--float-mode ieee` 切 IEEE 754 |

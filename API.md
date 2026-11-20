@@ -172,7 +172,7 @@ pub fn RecordLayout::covered_bytes(self : RecordLayout) -> Int
 | 数值（DISPLAY / zoned） | `SIGN ... SEPARATE` | +1 |
 | `COMP` / `COMP-3` / `COMP-1` / `COMP-2` | `SIGN ... SEPARATE` | +0（符号在表示内部，照 IBM 忽略该子句） |
 | 字符（`X` / `A` / `N`） | `SIGN` 任意写法 | **解析期拒绝**（字符项没有符号位置） |
-| 编辑型（`ZZ9.99` / `$9,999.99` / `9(5)CR`） | DISPLAY | 模式串展开后的**字符位置数**：`V` / `P` / `S` 不占（IBM PICTURE 符号表），插入字符 `$ , . + - / B 0 CR DB *` 各占 1 |
+| 编辑型（`ZZ9.99` / `$9,999.99` / `9(5)CR`） | DISPLAY | 模式串展开后的**字符位置数**：`V` / `P` / `S` 不占（IBM PICTURE 符号表）；插入字符 `$ , . + - / B 0 *` 各占 1，`CR` / `DB` **各占 2**（IBM Enterprise COBOL 6.5.0《PICTURE clause》符号表：*"The symbols CR and DB each occupy two character positions."*），故 `9(5)CR` / `9(5)DB` 都是 7 字节 |
 
 > `SIGN` 子句的适用范围（2026-11-13 审计）：IBM 的 SIGN 子句只用于**数值项**。
 > 只有 zoned（DISPLAY 数值）会因此多出一个独立符号字节；`COMP` 族把符号
