@@ -817,7 +817,7 @@ fn tokenize_lines(
           j = j + 1
         }
         let text = chars_sub(cs, i, j)
-        let n = parse_digits(text)
+        let n = parse_digits(text, line_no, col)
         let is_level = stmt_start && is_level_number(n) && j - i <= 2
         if is_level {
           toks.push({ kind: Level(n), line: line_no, column: col, })
@@ -903,12 +903,21 @@ fn tokenize_lines(
 /// 曾经静默回绕成一个看似正常的值，进入布局层后产生完全错误的
 /// 偏移。9 位上限已覆盖一切合法用途（OCCURS/级别号/PIC 重复次数
 /// 都远小于此）。
-fn parse_digits(text : String) -> Int32 raise ParseError {
+///
+/// `line`/`column` 由调用方传入**该数字 token 自己的位置**：本函数
+/// 看不到扫描状态，2026-11-22 之前这里硬写 `0,0`，于是 CLI 只打印
+/// `0:0: 数字 '…' 超出 Int32 范围`，整条诊断丢掉了唯一能定位的坐标
+/// （同一份 copybook 里 10 个 OCCURS 时无从判断是哪一行）。
+fn parse_digits(
+  text : String,
+  line : Int32,
+  column : Int32,
+) -> Int32 raise ParseError {
   let cs = text.to_array()
   if cs.length() == 0 || cs.length() > 9 {
     raise LexError(
-      0,
-      0,
+      line,
+      column,
       "数字 '\{text}' 超出 Int32 范围（最多 9 位）",
     )
   }

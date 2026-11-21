@@ -548,6 +548,26 @@ test "R7: 词法层超长数字报 LexError 而不是静默回绕" {
   inspect(ok, content="true")
 }
 
+///|
+test "R8: 词法层超长数字的报错必须带真实行列（不能是 0:0）" {
+  // 2026-11-22 前 parse_digits 硬写 LexError(0, 0, ...)，于是
+  // `OCCURS 99999999999` 的 CLI 诊断只有 `0:0:`，同一份 copybook 里
+  // 多个 OCCURS 时无法定位。行列必须来自该数字 token 自己的位置。
+  let err = try {
+    let _ = tokenize(
+      "       01 R.\n          05 A PIC 9(5) OCCURS 99999999999 TIMES.\n",
+    )
+    "<无错误>"
+  } catch {
+    e => e.to_display()
+  }
+  if !err.starts_with("2:") {
+    println("actual: \{err}")
+  }
+  inspect(err.starts_with("2:"), content="true")
+  inspect(err.has_prefix("0:0:"), content="false")
+}
+
 // ============================================================
 // 辅助
 // ============================================================
