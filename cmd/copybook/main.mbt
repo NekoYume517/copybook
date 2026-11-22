@@ -69,7 +69,7 @@ priv struct Options {
   mut float_mode : @lib.FloatMode
   /// 显式出现过的选项键（NEW-8：用于「子命令级白名单」校验）。
   ///
-  /// 旧实现只做全局键识别，于是 ncode 静默接受 --data / --format /
+  /// 旧实现只做全局键识别，于是 encode 静默接受 --data / --format /
   /// --record-length 这些对它毫无意义的选项（exit 0）。打错一个子命令名
   /// 或从别的命令复制过来时，用户得不到任何反馈。
   given : Array[String]
