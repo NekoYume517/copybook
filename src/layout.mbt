@@ -629,6 +629,44 @@ fn checked_offset(
 }
 
 ///|
+/// OCCURS 摊平**条数**上限（CB-2026-11-23-1，2026-11-23 审计）。
+///
+/// `checked_mul` 的字节闸门只挡「总字节数超过 Int32」，挡不住摊平后的
+/// 叶子**条数**：`PIC X OCCURS 999999999` 总字节 1e9 < 2^31 能过闸，
+/// 但布局层会把 ~10 亿个 FieldLayout 逐条物化 —— CLI 实测 12 秒吃
+/// 3.85 GB 峰值内存被杀（嵌套 `OCCURS 31623 x OCCURS 31623` 总字节
+/// ≈2e9 同样过闸、同样挂死）。摊平循环物化之前必须先验条数预算。
+///
+/// 上限取 2,000,000：放行 `PIC X(2) OCCURS 999999`（约 2 MB 记录、近百万
+/// 叶子，已远超真实 COBOL 表的常见规模）与恰为两百万条的组合；挡住
+/// 1e9 条目级别的物化（任何真实机器都装不下，这类输入毫无业务含义）。
+const OCCURS_EXPANSION_LIMIT : Int64 = 2000000L
+
+///|
+/// 摊平预算检查（CB-2026-11-23-1 配套）：当前叶子数组长度加上本层
+/// 摊平即将新增的条数不得超过 `OCCURS_EXPANSION_LIMIT`。
+///
+/// **必须先验后摊**：守卫放在物化循环之前，一个条目都不多分配。
+/// 嵌套组逐层累加 —— 预算按当前叶子总数（已含外层摊平结果）计算，
+/// 所以 `OCCURS 31623 x OCCURS 31623` 这类「单层看着不大、乘积爆炸」
+/// 的形态也会在第一处超限的层被拦下。
+///
+/// `new_entries` 是本层摊平的**净增**条数（Int64 运算，避免
+/// source_count x occurs 的 Int32 回绕）。
+fn check_expansion_budget(
+  b : Builder,
+  new_entries : Int64,
+  what : String,
+) -> Unit raise ParseError {
+  let count = b.leaves.length().to_int64() + new_entries
+  if count > OCCURS_EXPANSION_LIMIT {
+    raise InvalidLayout(
+      "\{what}: OCCURS would flatten to \{count} leaf entries, exceeding the flattening limit \{OCCURS_EXPANSION_LIMIT}; reduce OCCURS counts or field sizes",
+    )
+  }
+}
+
+///|
 fn compile_field(
   b : Builder,
   spec : FieldSpec,
@@ -729,6 +767,14 @@ fn compile_field(
       // 数据面四条路径（decode/render/jsonl/encode）就全部自动一致。
       let len = pic_byte_length(pic)
       let total = checked_mul(len, occurs, "field '\{spec.name}'")
+      // 摊平条数守卫（CB-2026-11-23-1）：**先验后摊**。叶子自带 OCCURS
+      // 的摊平循环（下方 `while k <= occurs`）物化 occurs 份叶子，物化前
+      // 先验预算；超限时一个条目都不分配，微秒级拒绝。
+      if occurs > 1 {
+        // 叶子分支：摊平前数组里还没有本字段的任何条目，occurs 份全部
+        // 即将物化，预算按 occurs 全额计。
+        check_expansion_budget(b, occurs.to_int64(), "field '\{spec.name}'")
+      }
       let fl = FieldLayout::{
         name: spec.name,
         path,
@@ -812,6 +858,18 @@ fn compile_field(
       // 摊平组级 OCCURS：把递归期间新增的每个叶子重写为 occurs 份。
       // 叶子分支已保证新叶子 occurs==1（叶子自带 OCCURS 同样在叶子分支
       // 摊平），所以这里的展开总是安全的。
+      // 摊平条数守卫（CB-2026-11-23-1）：**先验后摊**。组级摊平把递归
+      // 期间新增的每个叶子重写为 occurs 份，物化前先验预算；嵌套组逐层
+      // 累加（预算按当前叶子总数计），`31623 x 31623` 这类乘积爆炸形态
+      // 在第一处超限的层被拦下。
+      if occurs > 1 {
+        let src_count = b.leaves.length() - leaf_mark
+        check_expansion_budget(
+          b,
+          src_count.to_int64() * (occurs - 1).to_int64(),
+          "group '\{spec.name}'",
+        )
+      }
       if occurs > 1 {
         let mut i = leaf_mark
         while i < b.leaves.length() {
