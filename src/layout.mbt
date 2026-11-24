@@ -356,22 +356,40 @@ pub fn pic_type_name(pic : PicClause) -> String {
 ///
 /// 只查「目标存在且同父」，长度约束在 `check_redefine_overlap`（需要偏移，
 /// 布局算完之后才能判）。
+///
+/// **复杂度**（CB-2026-11-24-2）：旧实现对每个带 `REDEFINES` 的项重扫整个
+/// 兄弟数组，并且内层每次迭代都重新 `to_lower()` 一次（每次一条新字符串）。
+/// k 个兄弟、其中一半带 `REDEFINES` 就是 k²/2 次分配 + 比较：实测 2500 条
+/// 0.8 s、5000 条 3.0 s、10000 条 13.9 s、20000 条 **121 s**，而同样 20000
+/// 个兄弟**不带** `REDEFINES` 只要 0.7 s —— 纯二次，且触发量（2 万条子句
+/// ≈ 500 KB copybook）远低于任何摊平/字节上限。
+///
+/// 修法：兄弟层只建两张计数表（小写名、原始名），查「有没有别的兄弟」变成
+/// 两次 O(1) 查询。判据逐字保持原样：`found` 仍然排掉**原始名与本项相同**的
+/// 那些兄弟，所以 `to_lower` 相等但大小写不同的兄弟照样算命中。
 fn check_redefine_parentage(
   siblings : Array[FieldSpec],
 ) -> Unit raise ParseError {
+  let lower_count : Map[String, Int32] = Map([])
+  let raw_count : Map[String, Int32] = Map([])
+  for other in siblings {
+    let low = other.name.to_lower()
+    lower_count[low] = lower_count.get(low).unwrap_or(0) + 1
+    raw_count[other.name] = raw_count.get(other.name).unwrap_or(0) + 1
+  }
   for spec in siblings {
     match spec.redefines {
       Some(target_name) => {
         let want = target_name.to_lower()
-        let mut found = false
-        for other in siblings {
-          if other.name.to_lower() == want && other.name != spec.name {
-            found = true
-          }
-          // 同名时按定义顺序取前一个：COBOL 里重定义自己无意义，
-          // 这里仅用于「同名兄弟」这种本实现已另行拒绝的形态。
+        let hits = lower_count.get(want).unwrap_or(0)
+        // 原实现用 `other.name != spec.name` 排掉「本项自己」（以及任何
+        // 原始名完全相同的兄弟），这里减掉同样的量。
+        let self_and_twins = if spec.name.to_lower() == want {
+          raw_count.get(spec.name).unwrap_or(0)
+        } else {
+          0
         }
-        if !found {
+        if hits - self_and_twins <= 0 {
           raise InvalidLayout(
             "'\{spec.name}' REDEFINES '\{target_name}', but '\{target_name}' is not a sibling under the same parent item (line \{spec.line}): COBOL requires the redefined item to be in the same group (same level, same parent); cross-01 and cross-group REDEFINES are invalid",
           )
