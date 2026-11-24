@@ -423,17 +423,85 @@ fn check_redefine_parentage(
 /// 身上仍然报错（B10 原意）。判据按**双向**查：`A` 与 `V` 分属两组，
 /// 「V 是视图、A 在 V 的目标区间内」与「A 是某视图的目标、V 在 A 的区间内」
 /// 必须同样成立，否则检查顺序会决定结论。
+///
+/// **复杂度**（CB-2026-11-24-1）：判据只需要「与 `[vs, ve)` 相交的叶子」，
+/// 但朴素写法对每个视图叶子全表扫描，于是 `REDEFINES` 视图里带 `OCCURS n`
+/// 就是 n 个视图叶子 × (n+1) 个叶子 = O(n²)。n 在摊平上限
+/// （`OCCURS_EXPANSION_LIMIT` = 2e6，CB-2026-11-23-1 定）之内时也能把
+/// `layout` / `decode` / `verify` / `encode` 拖到小时级：实测视图内
+/// `OCCURS 50000` 3.9 s、两个视图各 50000 共 **20.5 s**，而同等规模的
+/// 非视图 OCCURS 只要 0.28 s。
+///
+/// 修法只改**枚举方式**，不改判据：`leaves` 由 `compile_layout` 按 offset
+/// 升序排好（同偏移保持定义顺序），于是
+///
+///   1. 起点用二分（`lower_bound(vs)`）：offset < vs 的叶子只可能通过
+///      「从左侧跨过 vs」相交，用前缀最大结束偏移一次性判断有没有这种叶子，
+///      没有就一个都不看；
+///   2. 从起点向后扫，`offset >= ve` 立即停。
+///
+/// 候选集仍是 `{other | other.offset < ve 且 other.end > vs}`，与全表扫描
+/// 逐例等价；每个视图的代价降到 O(log n + 命中数)。
 fn check_redefine_overlap(
   leaves : Array[FieldLayout],
   exempt_spans : Array[(Int32, Int32, Int32)],
 ) -> Unit raise ParseError {
+  let n = leaves.length()
+  if n == 0 {
+    return
+  }
+  // 前缀最大结束偏移（Int64：offset + total_length 在 Int32 边缘会回绕，
+  // 与 `RecordLayout::covered_bytes` 的口径一致）
+  let premax_end : Array[Int64] = []
+  let mut best = 0L
+  for f in leaves {
+    let e = f.offset.to_int64() + f.total_length.to_int64()
+    if e > best {
+      best = e
+    }
+    premax_end.push(best)
+  }
   for view in leaves {
     if view.redefine_group == 0 {
       continue
     }
     let vs = view.offset
     let ve = view.offset + view.total_length
-    for other in leaves {
+    // 起点：第一个 offset >= vs 的叶子
+    let mut lo = 0
+    let mut hi = n
+    while lo < hi {
+      let mid = (lo + hi) / 2
+      if leaves[mid].offset < vs {
+        lo = mid + 1
+      } else {
+        hi = mid
+      }
+    }
+    // 从左侧跨过 vs 的叶子：`premax_end` 单调不减，二分找**最早**一个
+    // 「结束偏移 > vs」的叶子；它之前的叶子全在 vs 左侧结束，不可能相交。
+    let vs64 = vs.to_int64()
+    let mut start = lo
+    let mut bl = 0
+    let mut bh = lo
+    while bl < bh {
+      let mid = (bl + bh) / 2
+      if premax_end[mid] > vs64 {
+        bh = mid
+      } else {
+        bl = mid + 1
+      }
+    }
+    if bl < lo {
+      start = bl
+    }
+    let mut j = start
+    while j < n {
+      let other = leaves[j]
+      if other.offset >= ve {
+        break
+      }
+      j = j + 1
       if other.redefine_group == view.redefine_group {
         continue
       }
