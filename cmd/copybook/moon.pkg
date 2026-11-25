@@ -2,6 +2,7 @@ import {
   "NekoYume517/copybook/src" @lib,
   "moonbitlang/x/fs",
   "moonbitlang/x/sys",
+  "moonbitlang/x/unicode",
   "moonbitlang/core/env",
 }
 

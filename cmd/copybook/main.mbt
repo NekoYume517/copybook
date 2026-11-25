@@ -246,7 +246,8 @@ fn load_layout(
   float_mode : @lib.FloatMode,
 ) -> Result[@lib.RecordLayout, String] {
   let text = match read_text_file(path) {
-    Some(t) => t
+    Some(Ok(t)) => t
+    Some(Err(msg)) => return Err(msg)
     None => return Err("cannot read copybook '\{path}'")
   }
   let specs = match compile_specs(text) {
@@ -301,13 +302,44 @@ fn try_compile(
 }
 
 ///|
-/// 读文本文件（UTF-8）。失败返回 `None`（调用方决定退出码）。
-fn read_text_file(path : String) -> String? {
-  try Some(@fs.read_file_to_string(path)) catch {
-    _ => None
-  } noraise {
-    v => v
+/// 读文本文件（UTF-8），并**校验它是真的 UTF-8**。
+///
+/// 旧实现直接用 `@fs.read_file_to_string`，它对非法字节是宽松解码：
+/// 坏槽位留在 String 里，随后 `lexer.mbt` 的 `split_lines` 在
+/// `get_char(i).unwrap()` 上 `moonbit_panic`，进程以 `0xC0000409`
+/// （abort）退出 —— 既不是 1（数据错误）也不是 2（用法错误）。
+/// 最容易撞上的是 Windows 记事本「另存为 → Unicode」产出的 UTF-16LE，
+/// 或者某些工具写出的孤立代理项 `ED A0 80`（2026-11-26 审计，P0）。
+///
+/// 这里先按字节校验（`validate_utf8`），非法时返回**带文件名与字节偏移**
+/// 的用法级提示；同时单独识别 UTF-16/UTF-32 的 BOM，直接告诉用户该文件
+/// 该另存成什么。校验通过后才交给 core 的解码器（此时它不会 panic）。
+///
+/// 返回 `Some(Ok(text))` / `Some(Err(msg))` / `None`（读不出来）。
+fn read_text_file(path : String) -> Result[String, String]? {
+  let raw = match read_binary_file(path) {
+    Some(b) => b
+    None => return None
   }
+  match non_utf8_bom_name(raw) {
+    Some(name) =>
+      return Some(
+        Err(
+          "'\{path}' starts with a \{name} byte-order mark: this tool reads UTF-8 only (a copybook re-saved by Notepad as \u{201C}Unicode\u{201D} is the usual cause) — re-save it as UTF-8 without a BOM",
+        ),
+      )
+    None => ()
+  }
+  match validate_utf8(raw) {
+    Err((off, why)) =>
+      return Some(
+        Err(
+          "'\{path}' is not valid UTF-8: \{why} at byte offset \{off} (the file is probably UTF-16 or otherwise mis-encoded) — re-save it as UTF-8",
+        ),
+      )
+    Ok(_) => ()
+  }
+  Some(Ok(@unicode.to_utf8_string(raw)))
 }
 
 ///|
@@ -472,7 +504,11 @@ fn cmd_encode(opts : Options) -> Int32 {
     return EXIT_DATA
   }
   let text = match read_text_file(json_path) {
-    Some(t) => t
+    Some(Ok(t)) => t
+    Some(Err(msg)) => {
+      eprintln("encode: \{msg}")
+      return EXIT_DATA
+    }
     None => {
       eprintln("encode: cannot read json file '\{json_path}'")
       return EXIT_DATA

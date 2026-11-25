@@ -1,6 +1,7 @@
 import {
   "moonbitlang/core/json",
   "moonbitlang/core/string",
+  "moonbitlang/x/unicode",
 }
 
 import {

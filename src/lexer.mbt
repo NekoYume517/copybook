@@ -288,7 +288,20 @@ fn split_lines(src : StringView) -> Array[String] {
   let mut cur : Array[Char] = []
   let mut i = 0
   while i < n {
-    let c = src.get_char(i).unwrap()
+    // **坏槽位不能 unwrap**（2026-11-26 审计，P0）：`@fs.read_file_to_string`
+    // 宽松解码 UTF-8，非法字节序列（UTF-16 文件被改名成 .cpy、
+    // 「UTF-8 里塞 UTF-16 码元」的孤立代理项 ED A0 80）在 String 里留下
+    // 「长度算 1、get_char 返 None」的槽位。旧实现 `.unwrap()` 直接
+    // `moonbit_panic`，进程以 0xC0000409 退出 —— 既不是 1（数据错误）
+    // 也不是 2（用法错误），脚本只能当成「被系统杀了」，报错里也没有文件名。
+    //
+    // 换成 U+FFFD 占位：词法层的「无法识别的字符」分支本来就处理它，
+    // 于是非法输入走正常的 ParseError（带行号列号）。位置信息不丢，
+    // 也不会多出一条崩溃路径。
+    let c = match src.get_char(i) {
+      Some(ch) => ch
+      None => '\u{FFFD}'
+    }
     if c == '\n' {
       out.push(String::from_array(cur))
       cur = []
