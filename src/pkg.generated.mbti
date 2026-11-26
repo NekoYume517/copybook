@@ -50,6 +50,8 @@ pub fn is_ebcdic_digit(Int32) -> Bool
 
 pub fn is_ebcdic_space(Int32) -> Bool
 
+pub fn layout_sync_inert_warning(Array[String]) -> String
+
 pub fn layout_sync_warning(Int32) -> String
 
 pub fn parse_copybook(StringView) -> Array[FieldSpec] raise ParseError
@@ -216,12 +218,18 @@ pub(all) struct RecordLayout {
 }
 pub fn RecordLayout::covered_bytes(Self) -> Int32
 pub fn RecordLayout::find(Self, StringView) -> FieldLayout?
+pub fn RecordLayout::sync_summary(Self) -> SyncSummary
 
 pub(all) struct RenamesEntry {
   name : String
   from : String
   thru : String?
   line : Int32
+}
+
+pub(all) struct SyncSummary {
+  affected_leaves : Int32
+  inert_groups : Array[String]
 }
 
 pub(all) struct Token {

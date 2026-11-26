@@ -493,6 +493,20 @@ pub fn layout_sync_warning(count : Int32) -> String {
 }
 
 ///|
+/// 组上声明了 `SYNC` / `SYNCHRONIZED`、但组内一个基本项都没被点亮的警告
+/// （CB-21-2，2026-11-29）。
+///
+/// 与 `layout_sync_warning` 分开是有意的：那条说的是「N 个字段受影响，偏移
+/// 与 IBM 不同，别拿去读主机数据」；这条说的是「你写了 SYNC，但它什么也没
+/// 影响」。合成一句会让 `affected_leaves == 0` 的情形报出「0 field(s)
+/// declare ...」，比不说更糟。文案只有一个实现：CLI 的 stderr 与
+/// `render_layout` 的报告共用它。
+pub fn layout_sync_inert_warning(paths : Array[String]) -> String {
+  let joined = paths.join(", ")
+  "WARNING: \{paths.length()} group item(s) declare SYNC/SYNCHRONIZED but contain no basic item: \{joined}. No offset changes; the declaration has no effect on this layout."
+}
+
+///|
 /// 布局报告：字段名 / 偏移 / 长度 / 类型。
 ///
 /// 输出格式**必须与 API.md 逐字符一致**，包括列宽。实测 API.md 的样例：
@@ -549,7 +563,12 @@ pub fn render_layout(layout : RecordLayout) -> String {
   sb.write_string("NAME")
   sb.write_char('\n')
   // 数据行
-  let mut synced_count = 0
+  //
+  // **SYNC 计数读布局层的唯一权威**（CB-21-2，2026-11-29）：此前这里自己
+  // `let mut synced_count = 0` 数叶子，而 CLI 的 stderr 警告另扫源文本 ——
+  // 两个数字在组级 SYNC、多处 SYNC、空组 SYNC 上都对不上。现在两边都读
+  // `layout.sync_summary()`，逐行标注也用它的 `affected_leaves` 校验。
+  let sync = layout.sync_summary()
   let mut unreportable_count = 0
   for field in layout.fields {
     sb.write_string(pad_left(field.offset.to_string(), 6))
@@ -578,17 +597,24 @@ pub fn render_layout(layout : RecordLayout) -> String {
     // 解出的错误值，而 verify 抓不到（布局自洽，往返当然一致）。
     // 这里逐行标注，让使用者当场看见，而不是静默给出看起来权威的错布局。
     if field.is_synced {
-      synced_count = synced_count + 1
       sb.write_string(
         "   [SYNC: alignment not implemented, offsets differ from IBM]",
       )
     }
     sb.write_char('\n')
   }
-  if synced_count > 0 {
+  if sync.affected_leaves > 0 || sync.inert_groups.length() > 0 {
     sb.write_char('\n')
-    sb.write_string(layout_sync_warning(synced_count))
-    sb.write_char('\n')
+    if sync.affected_leaves > 0 {
+      sb.write_string(layout_sync_warning(sync.affected_leaves))
+      sb.write_char('\n')
+    }
+    // 组级 SYNC 没有作用对象（CB-21-2）：源文件里写了，但一个基本项都没被
+    // 点亮 —— 不能报「N field(s)」却一行都不标，也不能沉默。
+    if sync.inert_groups.length() > 0 {
+      sb.write_string(layout_sync_inert_warning(sync.inert_groups))
+      sb.write_char('\n')
+    }
   }
   if unreportable_count > 0 {
     sb.write_char('\n')

@@ -1,64 +1,58 @@
-// CB-20-1（2026-11-28 第二十轮审计）：**SYNC 声明在所有子命令里都不出声**。
+// CB-20-1（2026-11-28 第二十轮）→ CB-21-2（2026-11-29 第二十一轮）：
+// SYNC 警告先是「只在 layout 上出声」，收敛口径后又在「数什么」上分叉。
 //
-// ## 缺陷形态（修复前实测）
+// ## CB-20-1 的形态（已修，`3a71f75`）
 //
-// `SYNC` / `SYNCHRONIZED` 是一个「本子集不实现、但会改变真实布局」的子句：
-// IBM 上带 SYNC 的 COMP 字段必须落在半字/全字边界，它前面的字段可能被填充、
-// 记录变长。`render_layout` 因此逐行标注 `[SYNC: ...]` 并在末尾打一条
-// WARNING（NEW-4，2026-11-04）——**但只有 `copybook layout` 会调
-// `render_layout`**：
+// 一份声明了 SYNC 的 copybook：`layout` 逐行标 `[SYNC:]` + 汇总 WARNING，
+// 但 `verify` 报 `byte-identical roundtrip`（exit 0）**一个字都不提**，
+// `decode` / `encode` 同样零提示。根因：文案只长在 `render_layout` 里，
+// 只有 `cmd_layout` 调它。修法是把文案提成 `@lib.layout_sync_warning`，
+// 并让其余三个子命令也出声。
 //
-//     $ copybook layout --copybook s.cpy          # 有 [SYNC:] 标注 + WARNING
-//     $ copybook verify --copybook s.cpy --data s.dat
-//     verify: 1 record(s) OK, byte-identical roundtrip      <- exit 0，零提示
-//     $ copybook decode --copybook s.cpy --data s.dat --format jsonl
-//     {"R.A":"A","R.B":1,"R.C":"B"}                          <- exit 0，零提示
+// ## CB-21-2 的形态（本轮修，`audit/2026-11-29/sync-counts.txt`）
 //
-// 危害正是 NEW-4 当初要拦的那一条：这份布局拿去读**主机数据**时每个 COMP
-// 数值都是错位解出的错误值，而 verify 抓不到（布局自洽，往返当然一致）。
-// 用户在 verify / decode 上拿到的却是无条件的「byte-identical roundtrip」，
-// 与 CB-19-4 的 partial roundtrip 是同一类缺陷：**载荷本身没错，错的是那句
-// 结论没有说明自己不覆盖什么**。
+// CB-20-1 为了让非 layout 子命令出声，在 CLI 里**重新扫了一遍 copybook 源
+// 文本**数 `SYNC` 关键字；而 `render_layout` 数的是 `is_synced` 的**叶子**。
+// 同一份 copybook 于是能报出两个数字：
 //
-// ## 判据
+// | copybook                            | layout | verify |
+// |---|---|---|
+// | `05 M SYNC.` + 2 个孩子              | 2 | 1 |
+// | `05 M1 SYNC.` + `05 M2 SYNC.`        | 3 | 2 |
+// | `05 G1 SYNC.` + 三层嵌套 2 叶子      | 2 | 1 |
+// | 组级 `SYNC`，组内**没有**基本项       | **不报** | 1 |
 //
-// 1. 只要布局里有 SYNC 声明，`decode` / `encode` / `verify` 都必须说出同一句
-//    话（`layout` 的 stdout 报告里已有逐行标注 + 汇总警告，不重复打印）。
-// 2. `exit 0` 不被警告改变 —— 这是**警告**不是拒绝（契约没变）。
-// 3. 文案只有一个实现（`@lib.layout_sync_warning`），CLI 与 `render_layout`
-//    同源，免得「文案在 A、判定在 B」再分裂一次。
+// 最后一档最强：源文本里确实有 `SYNC`（CLI 报 1），布局里却没有任何字段受
+// 影响（`render_layout` 一行都不标）—— 两边都不算错，错在没有共同的定义。
+//
+// ## 收敛
+//
+// 权威口径收到 `RecordLayout::sync_summary()`：
+//   · `affected_leaves` —— 受 SYNC 影响的基本项数（真正被改动偏移的那些）
+//   · `inert_groups`    —— 声明在组上、却没点亮任何基本项的路径
+//
+// `render_layout` 与 CLI 的 `warn_sync_layout` 都只读它；文案各一条：
+// `layout_sync_warning`（N 个字段受影响，别拿去读主机数据）与
+// `layout_sync_inert_warning`（你写了 SYNC，但它什么也没影响）。
 
 ///|
-fn cb201_write_pair(
-  cpy_bytes : Bytes,
-  cpy : String,
-  dat : String,
-  dat_bytes : Bytes,
-) -> Unit {
-  @fs.write_bytes_to_file(cpy, cpy_bytes) catch {
+/// 写 copybook 与数据。**必须按 ASCII 字节字面量写**：`@lib.ebcdic_encode`
+/// 把 `.` / 空格 / 数字都映射成 cp037（`.` 是 0x4B、`0` 是 0xF0），落盘的
+/// 不是可读的 copybook —— 上一版用它，`verify` 于是报 parse error 而不是
+/// 「有 SYNC 警告 + exit 0」。
+fn cb212_write(cpy : String, dat : String, bytes : Bytes) -> Unit {
+  @fs.write_bytes_to_file(
+    cpy, b"01 R.\n    05 A PIC X(1).\n    05 B PIC 9(4) COMP SYNC.\n    05 C PIC X(1).\n",
+  ) catch {
     _ => ()
   }
-  @fs.write_bytes_to_file(dat, dat_bytes) catch {
+  @fs.write_bytes_to_file(dat, bytes) catch {
     _ => ()
   }
 }
 
 ///|
-fn cb201_opts(cpy : String, dat : String) -> Options {
-  {
-    copybook: Some(cpy),
-    data: Some(dat),
-    json: None,
-    out: None,
-    format: "jsonl",
-    record_length: None,
-    float_mode: @lib.Hfp,
-    given: [],
-  }
-}
-
-///|
-fn cb201_cleanup(cpy : String, dat : String) -> Unit {
+fn cb212_cleanup(cpy : String, dat : String) -> Unit {
   @fs.remove_file(cpy) catch {
     _ => ()
   }
@@ -69,13 +63,13 @@ fn cb201_cleanup(cpy : String, dat : String) -> Unit {
 
 ///|
 test "CB-20-1: SYNC 警告必须真的走到 stderr（不只文案正确）" {
-  // 反向验证要能变红：光断言 `layout_sync_warning` 的文案，删掉调用点也照样
-  // 全绿（第二十轮实测：回退三个调用点后 776/776 仍然通过）。所以这条判据
-  // 直接检查调用点确实存在，且三个子命令都调了。
+  // 反向验证要能变红：光断言文案，删掉调用点也照样全绿（第二十轮实测：
+  // 回退三个调用点后 776/776 仍然通过）。所以这条判据直接检查调用点存在，
+  // 且三个子命令都调了。
   let src = @fs.read_file_to_string("cmd/copybook/main.mbt")
   let mut hits = 0
   for line in src.split("\n") {
-    if line.contains("warn_sync_layout(cpy_text)") {
+    if line.contains("warn_sync_layout(layout)") {
       hits = hits + 1
     }
   }
@@ -96,63 +90,105 @@ test "CB-20-1: SYNC 警告文案只有一个实现，count=0 时为空串（不�
 }
 
 ///|
-test "CB-20-1: 源文本里的 SYNC 声明计数（含组项、大小写、注释不算）" {
-  // 叶子上的 SYNC / SYNCHRONIZED，大小写不敏感
-  inspect(
-    count_sync_leaves(
+test "CB-21-2: 权威口径 —— 组级 SYNC 数受影响的基本项，不是声明条数" {
+  // `05 M SYNC.` + 2 个孩子：受影响 2、声明 1（修复前 layout 2 / verify 1）
+  let lay = @lib.compile_layout(
+    @lib.parse_copybook(
+      "01 R.\n    05 M SYNC.\n       10 B PIC X(1).\n       10 C PIC X(1).\n",
+    ),
+  )
+  let s = lay.sync_summary()
+  inspect(s.affected_leaves, content="2")
+  inspect(s.inert_groups.length(), content="0")
+  // 报告与 summary 同源
+  assert_true(@lib.render_layout(lay).contains("2 field(s) declare SYNC"))
+}
+
+///|
+test "CB-21-2: 两处组级 SYNC 影响 3 个基本项（声明 2 条）" {
+  let lay = @lib.compile_layout(
+    @lib.parse_copybook(
+      "01 R.\n    05 A PIC X(1).\n    05 M1 SYNC.\n       10 B PIC X(1).\n    05 M2 SYNC.\n       10 C PIC X(1).\n       10 D PIC X(1).\n",
+    ),
+  )
+  let s = lay.sync_summary()
+  inspect(s.affected_leaves, content="3")
+  inspect(s.inert_groups.length(), content="0")
+}
+
+///|
+test "CB-21-2: 空组上的 SYNC = 空声明，单列一条，不混进字段数" {
+  // `05 M SYNC.` 后面没有任何子项：源文本里有 SYNC（修复前 CLI 报 1），
+  // 布局里却没有任何字段受影响（修复前 render_layout 一行都不标）。
+  let lay = @lib.compile_layout(
+    @lib.parse_copybook("01 R.\n    05 A PIC X(1).\n    05 M SYNC.\n"),
+  )
+  let s = lay.sync_summary()
+  inspect(s.affected_leaves, content="0")
+  inspect(s.inert_groups.length(), content="1")
+  inspect(s.inert_groups[0], content="R.M")
+  let report = @lib.render_layout(lay)
+  // 不能报「0 field(s)」，也不能沉默
+  assert_false(report.contains("0 field(s)"))
+  assert_true(report.contains("R.M"))
+  assert_true(report.contains("has no effect"))
+  assert_true(@lib.layout_sync_inert_warning(["R.M"]).contains("R.M"))
+}
+
+///|
+test "CB-21-2: 叶子级 SYNC 不受影响（1 处声明 = 1 个受影响）" {
+  let lay = @lib.compile_layout(
+    @lib.parse_copybook(
       "01 R.\n    05 A PIC X(1).\n    05 B PIC 9(4) COMP SYNC.\n",
     ),
-    content="1",
   )
-  inspect(
-    count_sync_leaves(
-      "01 R.\n    05 B PIC 9(4) COMP Synchronized.\n    05 C PIC X(1).\n",
-    ),
-    content="1",
-  )
-  // 组项上的 SYNC 同样改变布局（parser 会下发给孩子）——必须数进去
-  inspect(
-    count_sync_leaves("01 R.\n    05 M SYNC.\n       10 B PIC X(1).\n"),
-    content="1",
-  )
-  // 注释行不算、字面量不是 SYNC 的词不算
-  inspect(
-    count_sync_leaves(
-      "01 R.\n*    05 B PIC 9(4) COMP SYNC.\n    05 C PIC X(1).\n",
-    ),
-    content="0",
-  )
-  inspect(count_sync_leaves("01 R.\n    05 C PIC X(1).\n"), content="0")
+  let s = lay.sync_summary()
+  inspect(s.affected_leaves, content="1")
+  inspect(s.inert_groups.length(), content="0")
 }
 
 ///|
-test "CB-20-1: 无 SYNC 的布局在 verify 上保持原样（不误伤）" {
-  let cpy = "_cb201_plain.cpy"
-  let dat = "_cb201_plain.dat"
-  cb201_write_pair(b"01 R.\n    05 A PIC X(2).\n", cpy, dat, b"\xC1\xC2")
-  inspect(cmd_verify(cb201_opts(cpy, dat)), content="0")
-  // 源文本判定也必须为 0：这条 copybook 一个字都不提 SYNC
-  inspect(count_sync_leaves("01 R.\n    05 A PIC X(2).\n"), content="0")
-  cb201_cleanup(cpy, dat)
+test "CB-21-2: CLI 不再扫源文本（两套口径的根源已删除）" {
+  let src = @fs.read_file_to_string("cmd/copybook/main.mbt")
+  assert_false(src.contains("fn count_sync_leaves"))
+  assert_false(src.contains("fn declares_sync"))
+  assert_false(src.contains("fn trim_ascii_space"))
 }
 
 ///|
-test "CB-20-1: 带 SYNC 的布局 verify 仍 exit 0（警告不是拒绝）" {
-  let cpy = "_cb201_sync.cpy"
-  let dat = "_cb201_sync.dat"
-  // 布局 4 字节（本子集不做对齐）、数据 4 字节、往返自洽 —— 修复前 exit 0
-  // 且一个字都不提 SYNC；修复后 exit 0 不变，只是必须出声。
-  cb201_write_pair(
-    b"01 R.\n    05 A PIC X(1).\n    05 B PIC 9(4) COMP SYNC.\n    05 C PIC X(1).\n",
-    cpy, dat, b"\xC1\x00\x01\xC2",
-  )
-  inspect(cmd_verify(cb201_opts(cpy, dat)), content="0")
-  // 声明的确被数到 1（否则上一条 exit 0 就说明不了「出声了」）
-  inspect(
-    count_sync_leaves(
+test "CB-20-1: 有 SYNC 的布局 verify 仍 exit 0（警告不是拒绝）" {
+  let cpy = "_cb212_sync.cpy"
+  let dat = "_cb212_sync.dat"
+  // 布局 4 字节（本子集不做对齐）、数据 4 字节、往返自洽
+  cb212_write(cpy, dat, b"\xC1\x00\x01\xC2")
+  let opts : Options = {
+    copybook: Some(cpy),
+    data: Some(dat),
+    json: None,
+    out: None,
+    format: "jsonl",
+    record_length: None,
+    float_mode: @lib.Hfp,
+    given: [],
+  }
+  inspect(cmd_verify(opts), content="0")
+  // 声明的确被算进去（否则上一条 exit 0 说明不了「出声了」）
+  let lay = @lib.compile_layout(
+    @lib.parse_copybook(
       "01 R.\n    05 A PIC X(1).\n    05 B PIC 9(4) COMP SYNC.\n    05 C PIC X(1).\n",
     ),
-    content="1",
   )
-  cb201_cleanup(cpy, dat)
+  inspect(lay.sync_summary().affected_leaves, content="1")
+  cb212_cleanup(cpy, dat)
+}
+
+///|
+test "CB-20-1: 无 SYNC 的布局不产生警告（不误伤）" {
+  let lay = @lib.compile_layout(
+    @lib.parse_copybook("01 R.\n    05 A PIC X(2).\n"),
+  )
+  let s = lay.sync_summary()
+  inspect(s.affected_leaves, content="0")
+  inspect(s.inert_groups.length(), content="0")
+  assert_false(@lib.render_layout(lay).contains("SYNC"))
 }

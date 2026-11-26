@@ -95,6 +95,99 @@ pub(all) struct RecordLayout {
 }
 
 ///|
+/// 这份布局里有多少**基本项**受 `SYNC` / `SYNCHRONIZED` 影响 ——
+/// **唯一权威**（CB-21-2，2026-11-29 审计）。
+///
+/// ## 为什么必须收到这里
+///
+/// 此前的警告数字有两个来源：
+///
+///   · `render_layout`（`layout` 的 stdout 报告）数 `layout.fields` 里
+///     `is_synced` 的**叶子**；
+///   · CLI 的 `warn_sync_layout`（`decode` / `encode` / `verify` 的 stderr）
+///     在 `cmd/copybook/main.mbt` 里**重新扫 copybook 源文本**数 `SYNC` 关键字。
+///
+/// 两者只在「一处 SYNC 恰好影响一个叶子」时相等。实跑反例（同一份 copybook
+/// 在 `layout` 与 `verify` 上各自报的数字，见 `audit/2026-11-29/sync-counts.txt`）：
+///
+/// | copybook                            | layout | verify |
+/// |---|---|------|
+/// | `05 M SYNC.` + 2 个孩子              | 2 | 1 |
+/// | `05 M1 SYNC.` + `05 M2 SYNC.`        | 3 | 2 |
+/// | `05 G1 SYNC.` + 三层嵌套 2 叶子      | 2 | 1 |
+/// | 组级 `SYNC`，组内**没有**叶子         | **不报** | 1 |
+///
+/// 最后一行最强：源文本里确实有 `SYNC`（CLI 因此报 1），但布局里没有任何字段
+/// 受它影响（`render_layout` 一行都不标）。同一份 copybook 两句话互相矛盾。
+///
+/// ## 口径选择
+///
+/// 权威口径 = 「**被 SYNC 影响的基本项数**」（`fields` 里 `is_synced` 的叶子）。
+/// 理由：警告的用途是「这份偏移与 IBM 不同、别拿去读主机数据」，而**改变偏移
+/// 的是叶子**；组上的 `SYNC` 影响几个叶子，与源文件里有几个关键字无关。
+///
+/// 组上声明、但一个叶子都没被点亮时，受影响数可以是 **0** —— 此时不能再报
+/// 「N field(s) declare SYNC」却一行都不标。但也不能完全沉默（源文件里确实
+/// 写了 `SYNC`），所以额外给出 `inert_groups`：声明在组项上、又没传达到任何
+/// 叶子的那几处。调用方据此给一条**不同的**诊断（「这处 SYNC 没有作用对象」），
+/// 而不是把它混进字段数。
+pub(all) struct SyncSummary {
+  /// 受 SYNC 影响的基本项数（= `fields` 里 `is_synced` 的叶子数）
+  affected_leaves : Int32
+  /// 声明了 SYNC 却**没有**影响任何基本项的组项路径（源文件里的「空声明」）
+  inert_groups : Array[String]
+}
+
+///|
+/// 计算 `SyncSummary`。**唯一权威**：`render_layout` 的逐行标注 + 汇总警告、
+/// CLI 的 stderr 警告都必须读它，不许各算各的（CB-21-2）。
+pub fn RecordLayout::sync_summary(self : RecordLayout) -> SyncSummary {
+  let mut affected = 0
+  for f in self.fields {
+    if f.is_synced {
+      affected = affected + 1
+    }
+  }
+  // 「空声明」：组项带 is_synced，但它的跨度内没有任何 is_synced 的叶子。
+  // 只看**组**（在 `all_fields` 里但不在 `fields` 里）—— 叶子自己带标志的
+  // 情形已经在 `affected` 里数过了。
+  let inert : Array[String] = []
+  for g in self.all_fields {
+    if !g.is_synced {
+      continue
+    }
+    let mut is_leaf = false
+    for l in self.fields {
+      if l.path == g.path {
+        is_leaf = true
+        break
+      }
+    }
+    if is_leaf {
+      continue
+    }
+    let lo = g.offset
+    let hi = g.offset.to_int64() + g.total_length.to_int64()
+    let mut covered = false
+    for l in self.fields {
+      if !l.is_synced {
+        continue
+      }
+      let ls = l.offset
+      let le = l.offset.to_int64() + l.total_length.to_int64()
+      if ls >= lo && le <= hi {
+        covered = true
+        break
+      }
+    }
+    if !covered {
+      inert.push(g.path)
+    }
+  }
+  { affected_leaves: affected, inert_groups: inert, }
+}
+
+///|
 /// 计算单个 PIC 子句占用的字节数。
 ///
 /// 这是全项目最核心的一张表，逐项对应 API.md 第 3 节：
