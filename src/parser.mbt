@@ -1057,7 +1057,20 @@ fn parse_entry_clauses(
     }
     None =>
       match explicit_usage {
-        Some(Comp1) | Some(Comp2) =>
+        Some(Comp1) | Some(Comp2) => {
+          // **COMP-1 / COMP-2 上写 JUSTIFIED 也必须拒绝**（CB-20-2，
+          // 2026-11-28 审计）：这两个 USAGE 走的是「没有 PIC 的浮动项」这条
+          // 分支，CB-19-2 把 JUSTIFIED 的判据补到了 `pc.category` 两条支路上，
+          // 而这里根本不经过 `pc` —— 于是 `05 A COMP-1 JUSTIFIED RIGHT.` 被
+          // 照收、`justified_right: false` 硬写死，声明与实现又一次分离：
+          // 用户以为右对齐生效，编码器一个字节都不看它（实测与非 JUSTIFIED
+          // 版本的输出逐字节相同）。COMP-1/COMP-2 存的是浮点位模式，更没有
+          // 「填充方向」可言（理由同 Numeric 支路）。
+          if is_justified_right {
+            raise SyntaxError(
+              justified_line, justified_col, "COMP-1 / COMP-2 不允许 JUSTIFIED RIGHT：浮点字段存储的是位模式，没有字符类的填充方向；JUSTIFIED 只对基本字符项（alphabetic / alphanumeric / national）有意义（IBM 规则）",
+            )
+          }
           Some({
             category: Numeric,
             digits: 0,
@@ -1077,6 +1090,7 @@ fn parse_entry_clauses(
               _ => "COMP-2"
             },
           })
+        }
         _ => None
       }
   }
