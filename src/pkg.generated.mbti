@@ -50,6 +50,8 @@ pub fn is_ebcdic_digit(Int32) -> Bool
 
 pub fn is_ebcdic_space(Int32) -> Bool
 
+pub fn layout_sync_warning(Int32) -> String
+
 pub fn parse_copybook(StringView) -> Array[FieldSpec] raise ParseError
 
 pub fn parse_copybook_conditions(StringView) -> Array[ConditionName] raise ParseError

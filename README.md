@@ -261,12 +261,21 @@ EBCDIC 使用 **cp037**（US/Canada）。ASCII 与 EBCDIC 的数字位置完全�
 
 后果不是「差一个字节」，而是**拿这份布局去解主机数据时，每个 COMP 数值
 都会从错误偏移读出错误值，而 `verify` 抓不到**——布局自洽，decode→encode
-当然逐字节一致。因此 `layout` 命令会对每个 SYNC 字段逐行标注
-`[SYNC: alignment not implemented, offsets differ from IBM]` 并在末尾给出
-汇总警告；这个标志也作为 `FieldLayout.is_synced` 出现在 API 里。读到警告
-就说明这份 copybook 不能直接用来读主机数据，需要先在 copybook 层按 IBM
-规则手工插入填充字段（或等本实现支持对齐）。回归测试：
-`src/sync_clause_test.mbt`。
+当然逐字节一致。因此 **四个子命令都会出声**：`layout` 对每个 SYNC 字段
+逐行标注 `[SYNC: alignment not implemented, offsets differ from IBM]` 并在
+末尾给出汇总警告；`decode` / `encode` / `verify` 则在 stderr 上打同一条
+汇总警告（`verify` 的那条排在 `... record(s) OK` 结论之前，`2>&1` 合并后
+也是「先警告、后结论」）。这个标志也作为 `FieldLayout.is_synced` 出现在
+API 里。读到警告就说明这份 copybook 不能直接用来读主机数据，需要先在
+copybook 层按 IBM 规则手工插入填充字段（或等本实现支持对齐）。回归测试：
+`src/sync_clause_test.mbt`、`cmd/copybook/sync_warning_wbtest.mbt`。
+
+> **第二十轮（2026-11-28）补的洞**：警告此前只长在 `render_layout` 里，
+> 而只有 `layout` 会调它 —— `verify` 对一份带 SYNC 的 copybook 报
+> `byte-identical roundtrip`（exit 0）时**一个字都不提**，`decode` 也一样。
+> 这正是上面那句「verify 抓不到」的完整形态：工具给出的确定性与它实际
+> 覆盖的范围不符。文案现在只有一个实现（`@lib.layout_sync_warning`），
+> CLI 与报告同源。
 
 `SYNC` 写在**组项**上等价于写在组内每个基本项上（IBM 的组级
 `SYNCHRONIZED` 语义），因此组内每个基本项都会各自被标注、汇总数按基本项

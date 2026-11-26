@@ -471,6 +471,28 @@ fn pad_left(s : StringView, width : Int32) -> String {
 }
 
 ///|
+
+///|
+/// 有 `count` 个字段声明了 `SYNC` / `SYNCHRONIZED` 时的**唯一**警告文案。
+///
+/// 这句话此前只长在 `render_layout` 里，于是**只有 `layout` 子命令会出声**
+/// （CB-20-1，2026-11-28 审计）：`verify` / `decode` / `encode` 读到同一份
+/// 带 SYNC 的布局时一个字都不提。危害正是 NEW-4 当初要拦的那一条 ——
+/// 本子集不做 IBM 半字/全字对齐，这份偏移拿去读主机数据时每个 COMP 数值
+/// 都是错位解出的错误值，而 verify 抓不到（布局自洽、往返当然一致）。
+/// 判据只有一个实现：CLI 的其余三个子命令都从 `render_layout` 这里取同一句，
+/// 免得「文案在 A、判定在 B」再分裂一次。
+///
+/// 返回**不带**结尾换行的单行文本；`count == 0` 时返回空串（调用方据此
+/// 决定是否打印）。
+pub fn layout_sync_warning(count : Int32) -> String {
+  if count <= 0 {
+    return ""
+  }
+  "WARNING: \{count} field(s) declare SYNC/SYNCHRONIZED. This subset does not implement IBM half-word/full-word alignment: offsets above are computed without padding, so they differ from what a real z/OS compiler produces. Do not use this layout to read host data containing SYNC fields."
+}
+
+///|
 /// 布局报告：字段名 / 偏移 / 长度 / 类型。
 ///
 /// 输出格式**必须与 API.md 逐字符一致**，包括列宽。实测 API.md 的样例：
@@ -565,9 +587,8 @@ pub fn render_layout(layout : RecordLayout) -> String {
   }
   if synced_count > 0 {
     sb.write_char('\n')
-    sb.write_string(
-      "WARNING: \{synced_count} field(s) declare SYNC/SYNCHRONIZED. This subset does not implement IBM half-word/full-word alignment: offsets above are computed without padding, so they differ from what a real z/OS compiler produces. Do not use this layout to read host data containing SYNC fields.\n",
-    )
+    sb.write_string(layout_sync_warning(synced_count))
+    sb.write_char('\n')
   }
   if unreportable_count > 0 {
     sb.write_char('\n')

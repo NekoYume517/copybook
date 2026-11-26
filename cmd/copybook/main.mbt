@@ -240,11 +240,16 @@ fn parse_positive_int(s : StringView) -> Int32? {
 }
 
 ///|
-/// 从文件读 copybook 并编译布局。
-fn load_layout(
+/// 从文件读 copybook 并编译布局，**同时把源文本交回调用方**。
+///
+/// CB-20-1（2026-11-28 审计）：`SYNC` 警告需要在非 layout 子命令上也出现，
+/// 而「这份 copybook 声明了几处 SYNC」只能从源文本判定（布局层的
+/// `FieldLayout.is_synced` 会把组项上的 SYNC 下发给叶子，口径不同）。
+/// 这里顺手把文本带出来，免得再读一次文件、也免得两条路径读到不同内容。
+fn load_layout_with_text(
   path : String,
   float_mode : @lib.FloatMode,
-) -> Result[@lib.RecordLayout, String] {
+) -> Result[(@lib.RecordLayout, String), String] {
   let text = match read_text_file(path) {
     Some(Ok(t)) => t
     Some(Err(msg)) => return Err(msg)
@@ -255,8 +260,20 @@ fn load_layout(
     Err(msg) => return Err("copybook parse error: \{msg}")
   }
   match try_compile(specs, float_mode) {
-    Ok(l) => Ok(l)
+    Ok(l) => Ok((l, text))
     Err(msg) => Err("layout error: \{msg}")
+  }
+}
+
+///|
+/// 从文件读 copybook 并编译布局。
+fn load_layout(
+  path : String,
+  float_mode : @lib.FloatMode,
+) -> Result[@lib.RecordLayout, String] {
+  match load_layout_with_text(path, float_mode) {
+    Ok(pair) => Ok(pair.0)
+    Err(msg) => Err(msg)
   }
 }
 
@@ -353,6 +370,109 @@ fn read_binary_file(path : String) -> Bytes? {
 }
 
 ///|
+/// 布局里声明了 `SYNC` / `SYNCHRONIZED` 的叶子数，供 CLI 在**非 layout**
+/// 子命令上补同一条警告（CB-20-1，2026-11-28 审计）。
+///
+/// 为什么不用 `layout`（`RecordLayout`）直接数：`render_layout` 的报告只
+/// 遍历 `layout.fields`（**叶子**），所以布局层那句
+/// 「N field(s) declare SYNC」里的 N 数的是叶子。CLI 要在 stderr 上说
+/// 「同一句话」，N 的口径就必须也是叶子 —— 从 `all_fields` 里挑
+/// `FieldLayout.is_synced` 的只会多算（组项也带这个标志，组上的 SYNC
+/// 会被下发到它当时已有的孩子），两句警告的 N 就对不上了。唯一口径是从
+/// copybook 源文本里数带 SYNC 子句的**基本项**（即叶子声明）。
+///
+/// 计数必须与布局层的判据同源（`render_layout` 逐行标注的就是这些叶子），
+/// 否则同一份 copybook 在 `layout` 和 `verify` 两个子命令上会给出不同的 N。
+fn count_sync_leaves(cpy_text : String) -> Int32 {
+  let mut count = 0
+  let lines = cpy_text.split("\n").collect()
+  for raw in lines {
+    // COBOL 的注释列：固定格式下 `*` 在第 7 列（此处按去空白后的首字符判，
+    // 与本项目 lexer 的宽松口径一致）。注释里的 SYNC 不算声明。
+    let line = raw.to_owned()
+    let trimmed = trim_ascii_space(line)
+    if trimmed == "" || trimmed[0] == '*' {
+      continue
+    }
+    if declares_sync(trimmed) {
+      count = count + 1
+    }
+  }
+  count
+}
+
+///|
+fn trim_ascii_space(s : String) -> String {
+  let mut start = 0
+  let mut end = s.length()
+  while start < end {
+    let c = s[start]
+    if c == ' ' || c == '\t' || c == '\r' {
+      start = start + 1
+    } else {
+      break
+    }
+  }
+  while end > start {
+    let c = s[end - 1]
+    if c == ' ' || c == '\t' || c == '\r' {
+      end = end - 1
+    } else {
+      break
+    }
+  }
+  s[start:end].to_owned()
+}
+
+///|
+/// 该行是否是一条「带 SYNC 子句的基本项声明」。
+///
+/// 只要同时出现层级号 + 名字 + `PIC` 才算叶子：`05 M SYNC.` 是组项，
+/// 它的 SYNC 会被 parser 下发给孩子（`group_sync_inherit_test.mbt` 锁的就是
+/// 这个下发），而**孩子自己不再带 is_synced=true 的来源行**，所以这里
+/// 采用「按词面 SYNC 出现即计」的口径 —— 组项上的 SYNC 同样会改变布局，
+/// 也必须被数进去；它与 parser 的语义差别只在「一条 SYNC 影响几个叶子」，
+/// 而警告文案的关键信息是「这份 copybook 声明了对齐、本工具不解」，
+/// 逐行按声明数比按受影响叶子数更贴近用户看到的源文件。
+fn declares_sync(line : String) -> Bool {
+  let chars = line.to_array()
+  let mut has_sync = false
+  let words : Array[String] = []
+  let mut cur = StringBuilder()
+  for c in chars {
+    if c == ' ' || c == '\t' || c == '\r' || c == '.' {
+      if cur.to_string() != "" {
+        words.push(cur.to_string())
+        cur = StringBuilder()
+      }
+    } else {
+      cur.write_char(c)
+    }
+  }
+  if cur.to_string() != "" {
+    words.push(cur.to_string())
+  }
+  for w in words {
+    let u = w.to_upper()
+    if u == "SYNC" || u == "SYNCHRONIZED" {
+      has_sync = true
+    }
+  }
+  has_sync
+}
+
+///|
+/// 在 stderr 上补一条 SYNC 警告（文案与 `render_layout` 的报告同源）。
+///
+/// `count == 0` 时什么都不打印 —— 没有 SYNC 声明的 copybook 不受任何影响。
+fn warn_sync_layout(cpy_text : String) -> Unit {
+  let n = count_sync_leaves(cpy_text)
+  if n > 0 {
+    eprintln(@lib.layout_sync_warning(n))
+  }
+}
+
+///|
 /// 子命令：layout
 fn cmd_layout(opts : Options) -> Int32 {
   let cpy = match opts.copybook {
@@ -403,7 +523,7 @@ fn cmd_decode(opts : Options) -> Int32 {
       return EXIT_USAGE
     }
   }
-  let layout = match load_layout(cpy, opts.float_mode) {
+  let (layout, cpy_text) = match load_layout_with_text(cpy, opts.float_mode) {
     Ok(l) => l
     Err(msg) => {
       eprintln(msg)
@@ -440,6 +560,7 @@ fn cmd_decode(opts : Options) -> Int32 {
       "warning: --record-length \{rec_len} exceeds the layout length \{layout.byte_length}; the trailing \{rec_len - layout.byte_length} byte(s) of each record are outside the copybook and are skipped on decode (they are NOT restored by encode)",
     )
   }
+  warn_sync_layout(cpy_text)
   // 空文件不是「成功解码了 0 条记录」，而是没有数据可解。
   // 静默返回 0 会让调用方（尤其是脚本）误以为文件正常。
   if data.length() == 0 {
@@ -492,7 +613,7 @@ fn cmd_encode(opts : Options) -> Int32 {
       return EXIT_USAGE
     }
   }
-  let layout = match load_layout(cpy, opts.float_mode) {
+  let (layout, cpy_text) = match load_layout_with_text(cpy, opts.float_mode) {
     Ok(l) => l
     Err(msg) => {
       eprintln(msg)
@@ -503,6 +624,7 @@ fn cmd_encode(opts : Options) -> Int32 {
     eprintln("copybook has zero record length (no fields)")
     return EXIT_DATA
   }
+  warn_sync_layout(cpy_text)
   let text = match read_text_file(json_path) {
     Some(Ok(t)) => t
     Some(Err(msg)) => {
@@ -595,7 +717,7 @@ fn cmd_verify(opts : Options) -> Int32 {
       return EXIT_USAGE
     }
   }
-  let layout = match load_layout(cpy, opts.float_mode) {
+  let (layout, cpy_text) = match load_layout_with_text(cpy, opts.float_mode) {
     Ok(l) => l
     Err(msg) => {
       eprintln(msg)
@@ -606,6 +728,13 @@ fn cmd_verify(opts : Options) -> Int32 {
     eprintln("copybook has zero record length (no fields)")
     return EXIT_DATA
   }
+  // **SYNC 警告要排在结论之前**（CB-20-1）：`verify` 的成功结论是
+  // 「byte-identical roundtrip」，而带 SYNC 的布局与真实 IBM 偏移不同 ——
+  // 这条往返自洽只证明「本工具自己的布局自洽」，不证明「这份文件能按
+  // copybook 读对」。`2>&1` 合并后警告必须先于结论行，否则顺序会反过来
+  // 变成「结论先成立、然后才提醒」。`layout` 子命令的 stdout 报告里已有
+  // 逐行 + 汇总标注，这里只对 verify 的 stderr 负责。
+  warn_sync_layout(cpy_text)
   let data = match read_binary_file(data_path) {
     Some(b) => b
     None => {
