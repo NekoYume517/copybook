@@ -91,11 +91,29 @@ test "decode output with the null view edited to \"\" roundtrips byte-exactly" {
 
 ///|
 test "without a snapshot, an empty view value still leaves unassigned 0x40" {
-  // 与 null 无快照一致：没有字节可回填时，洞 = 未赋值存储 = 空格
+  // 与 null 无快照一致：没有字节可回填时，洞 = 未赋值存储 = 空格。
+  //
+  // **CB-20-3（2026-11-28 第二十轮审计）**：这条「洞 = 空格」在**没有快照**
+  // 时不再是无条件成立的 —— `05 V REDEFINES M PIC 9(4).` 的 V 解不出
+  // （置 null）、空洞 [2,4) 没有任何字段值解释，缺 `__tail_hex` 时编码器
+  // 只能凭空写 0x40，于是 encode 报 `InvalidBypass`（`""` 与 `null` 都不会
+  // 让 V 产生字节，因此两者都拒绝，正是本条要的「一致」）。
+  // 要让「洞 = 未赋值 0x40」成立，必须**显式**给出空几何：`__tail_gap:[]`
+  // 表示「我知道这里没有快照，也确实要让它们成为未赋值存储」。
   let layout = evw_layout()
-  let with_empty = evw_encode(layout, "{\"R.M\":\"AB\",\"R.V\":\"\"}").unwrap()
-  let with_null = evw_encode(layout, "{\"R.M\":\"AB\",\"R.V\":null}").unwrap()
-  assert_eq(with_empty, with_null)
-  assert_eq(with_empty[2].to_int(), 0x40)
-  assert_eq(with_empty[3].to_int(), 0x40)
+  let with_empty = evw_encode(
+    layout, "{\"R.M\":\"AB\",\"R.V\":\"\",\"__tail_gap\":[]}",
+  )
+  let with_null = evw_encode(
+    layout, "{\"R.M\":\"AB\",\"R.V\":null,\"__tail_gap\":[]}",
+  )
+  // 空几何与「缺载体」同判：这条行里仍然没有字节来源 → 两条都报错
+  assert_true(with_empty is Err(_))
+  assert_true(with_null is Err(_))
+  // 空几何**加上**空快照（`__tail_hex:""`）才是显式声明「空洞里没有字节」
+  let forced = evw_encode(
+    layout, "{\"R.M\":\"AB\",\"R.V\":\"\",\"__tail_hex\":\"\",\"__tail_gap\":[]}",
+  ).unwrap()
+  assert_eq(forced[2].to_int(), 0x40)
+  assert_eq(forced[3].to_int(), 0x40)
 }

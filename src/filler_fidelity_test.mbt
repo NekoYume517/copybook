@@ -48,8 +48,17 @@ test "filler: all-space FILLER emits no bypass key and still roundtrips (P1-2)" 
   let row = decode_record(layout, record).unwrap()
   let text = render_jsonl(layout, [row])
   assert_false(text.contains("__filler_hex"))
+  // **CB-20-3（2026-11-28 第二十轮审计）**：这条记录的空洞字节也恰好是
+  // 0x40，旧写法「结果碰巧相等」掩盖了「根本没有快照」这件事。缺快照时
+  // encode 必须报错（空洞字节会静默变 0x40，与原始值无关）。
   let parsed = parse_jsonl_row(layout, text).unwrap()
-  assert_eq(encode_record(layout, parsed).unwrap(), record)
+  match encode_record(layout, parsed) {
+    Err(InvalidBypass(detail)) => assert_true(detail.contains("no carrier"))
+    Ok(_) => fail("缺 __filler_hex 时不得静默补 0x40")
+    Err(e) => fail("应当是 InvalidBypass，实际 \{e.to_display()}")
+  }
+  // 内存路径（`__record_bytes`）照旧逐字节保真
+  assert_eq(encode_record(layout, row).unwrap(), record)
   match roundtrip_check(layout, record) {
     Ok(None) => ()
     _ => fail("space filler roundtrip must be byte-identical")

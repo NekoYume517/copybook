@@ -49,10 +49,23 @@ test "field_will_write and encode_field agree on a bare-path-fed view" {
     ),
   )
   let row = parse_jsonl_row(layout, "{\"R.M\":\"AB\",\"R.V\":\"CD\"}").unwrap()
-  let out = encode_record(layout, row).unwrap()
+  // **CB-20-3（2026-11-28 第二十轮审计）**：第 2 个元素（[2,4)）没有值、
+  // 也没有快照 —— 旧写法在这里静默写出 0x40，现在必须报 `InvalidBypass`。
+  // 想得到「未赋值存储 0x40」就显式给空快照（`__tail_hex:""` +
+  // `__tail_gap:[]`），那是调用方在声明「这段确实没有字节」。
+  match encode_record(layout, row) {
+    Err(InvalidBypass(detail)) => assert_true(detail.contains("no carrier"))
+    Ok(_) =>
+      fail("没有值也没有快照的第 2 个元素不得静默写成 0x40")
+    Err(e) => fail("应当是 InvalidBypass，实际 \{e.to_display()}")
+  }
+  let explicit = parse_jsonl_row(
+    layout, "{\"R.M\":\"AB\",\"R.V\":\"CD\",\"__tail_hex\":\"\",\"__tail_gap\":[]}",
+  ).unwrap()
+  let out = encode_record(layout, explicit).unwrap()
   inspect(out[0].to_int(), content="195") // C1 'C'
   inspect(out[1].to_int(), content="196") // C2 'D'
-  // 视图只覆盖前两个字节：第 2 个元素（[2,4)）没有值 → 未赋值存储 0x40
+  // 显式声明「无快照」→ 未赋值存储 0x40
   inspect(out[2].to_int(), content="64")
   inspect(out[3].to_int(), content="64")
 }

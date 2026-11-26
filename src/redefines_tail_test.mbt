@@ -56,9 +56,22 @@ test "redefines tail: space filler does not emit the tail key, zero bytes do" {
   let row = decode_record(layout, record).unwrap()
   let jsonl_text = render_jsonl(layout, [row])
   assert_false(jsonl_text.contains("__tail_hex"))
+  // **CB-20-3（2026-11-28 第二十轮审计）**：没有快照、也没有字段值解释
+  // 那段空洞时，encode 必须报错而不是把字节静默写成 0x40。旧写法之所以
+  // 一直绿，是因为这条用例的原始记录**恰好**也是 0x40 ——「结果碰巧相等」
+  // 把「数据缺失」与「保真」混成了一件事。用「原记录不是 0x40」的形态
+  // 才能区分两者（见 `missing_bypass_key_test.mbt`）。
   let parsed = parse_jsonl_row(layout, jsonl_text).unwrap()
-  let encoded = encode_record(layout, parsed).unwrap()
-  assert_eq(encoded, record)
+  match encode_record(layout, parsed) {
+    Err(InvalidBypass(detail)) => assert_true(detail.contains("no carrier"))
+    Ok(_) => fail("缺快照时不得静默补 0x40")
+    Err(e) => fail("应当是 InvalidBypass，实际 \{e.to_display()}")
+  }
+  // 内存路径（`__record_bytes`）不受影响：逐字节保真
+  assert_eq(encode_record(layout, row).unwrap(), record)
+  // 视图被编辑成有值后，那段字节由视图生成，缺快照合法
+  let edited = parse_jsonl_row(layout, "{\"R.M\":123,\"R.A.RAW\":\"WXYZ\"}").unwrap()
+  assert_eq(encode_record(layout, edited).unwrap().length(), 4)
   // 全零**会**带出：0x00 与 0x40 字节不同，静默改写同样是数据损坏
   let record0 = bs([0x12, 0x3C, 0x00, 0x00])
   let row0 = decode_record(layout, record0).unwrap()

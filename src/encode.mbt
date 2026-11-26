@@ -1092,6 +1092,42 @@ fn occurs_element_values(
 }
 
 ///|
+/// 视图字段是否**从自己的值里产出了字节**（CB-20-3 判据用）。
+///
+/// 与 `field_will_write` 的差别只有一条：后者问「写不写」，本函数问
+/// 「这些字节从哪来」。`Null` 视图两者都不写；`Text("")` 在**字符类**上
+/// 是合法的「若干空格」——`field_will_write` 说会写（正确），但它的字节是
+/// `encode_text` 补出来的 0x40，与原记录那段空洞的原始字节无关，因此
+/// **不构成空洞字节的来源**，不能拿它来豁免「快照缺席」。
+///
+/// 不这样分会误伤：`REDEFINES` 视图解出来是空格（EXT 过渡形态），
+/// 用户没给快照时旧实现写回 0x40 与原记录相同；若把这种「空格视图」
+/// 也算成会写，`redefines_tail_test.mbt` 的既有语义就被推翻了。
+/// 只有当视图的值**确实携带内容**（非空文本 / 数值 / 日期等）时，
+/// 才能说「这段字节由字段生成，快照缺席是正确的」。
+fn field_explains_gap_bytes(
+  field : FieldLayout,
+  values : Map[String, CellValue]?,
+) -> Bool {
+  if !field_will_write(field, values) {
+    return false
+  }
+  let v = match values {
+    None => return false
+    Some(m) =>
+      match field_value(field, m) {
+        Some(x) => x
+        None => return false
+      }
+  }
+  match v {
+    Null => false
+    Text(s) => s.length() > 0
+    _ => true
+  }
+}
+
+///|
 /// 收集「会真正写入」的字段区间，按起点升序。
 fn written_intervals(
   layout : RecordLayout,
@@ -1333,6 +1369,13 @@ fn parse_gap_offset(text : String) -> Int32? {
 /// `__filler_gap` 数组校验后生成）→ 区间数组。格式不符返回 `None`。
 fn gap_spec_ranges(spec : String) -> Array[(Int32, Int32)]? {
   let out : Array[(Int32, Int32)] = []
+  // 空规格 = 显式「没有空洞」（CB-20-3，2026-11-28）：jsonl 端把 `[]` 规范
+  // 成空串，encode 端必须接受它 —— 否则调用方没有语法可以声明「这段确实
+  // 没有快照，就让它成为未赋值存储 0x40」。空数组被当成 malformed 会让
+  // 那条显式路径不可达。
+  if spec.trim_space().length() == 0 {
+    return Some(out)
+  }
   for part in spec.split(";") {
     match part.to_string().split_once(":") {
       None => return None
@@ -1434,6 +1477,10 @@ fn tail_spec_reaches_record_end(
   byte_length : Int32,
 ) -> Bool {
   match spec.length() {
+    // **空几何** = 显式「没有尾部空洞」（CB-20-3，2026-11-28）：调用方在
+    // 声明「这段确实没有快照」，于是没有需要校验的后缀区间。
+    // 没有这一支，那条显式路径不可达，「未赋值存储 0x40」就没有语法能表达。
+    0 => true
     // 恰好一个区间且结束于记录末尾（见上：decode 的输出形状）。
     1 =>
       match spec[0] {
@@ -1776,11 +1823,27 @@ pub fn encode_record(
           }
         _ =>
           if has_tail_gap {
-            return Err(
-              InvalidBypass(
-                "__tail_gap requires __tail_hex (the intervals alone carry no bytes)",
-              ),
-            )
+            // 空几何（`[]`）是「显式声明没有空洞」，不需要字节载体
+            // （CB-20-3，2026-11-28）—— 「区间单独存在却没有字节」这条
+            // 只针对**非空**区间，否则调用方没有语法声明「这里确实没有
+            // 快照，就让它们成为未赋值存储」。
+            let empty_geometry = match
+              gap_spec_ranges(
+                match values.get("__tail_gap") {
+                  Some(Text(s)) => s
+                  _ => ""
+                },
+              ) {
+              Some(r) => r.length() == 0
+              None => false
+            }
+            if !empty_geometry {
+              return Err(
+                InvalidBypass(
+                  "__tail_gap requires __tail_hex (the intervals alone carry no bytes)",
+                ),
+              )
+            }
           }
       }
       let filler_spec : Array[(Int32, Int32)]? = match
@@ -1868,9 +1931,90 @@ pub fn encode_record(
             )
           }
       }
+      // **空洞还留着、字节载体却整块缺席 → 报错**（CB-20-3，2026-11-28 审计）。
+      //
+      // 上面两条分支只拦「有几何没字节」：`__tail_gap` 缺 `__tail_hex` 报错。
+      // 反过来「字节整块缺席」没有任何对账 —— 空洞直接落回 Writer 初值
+      // 0x40。实测（native 二进制，剥掉行里所有 `__` 键后 encode）：
+      //
+      //   原记录 C1-C2-FF-FF → 写出 C1-C2-40-40      exit 0（__tail_hex:"ffff" 被丢）
+      //   原记录 C1-C2-C3-C4-C5-C6 → C1-C2-40-40-C5-C6   exit 0（__filler_hex:"c3c4" 被丢）
+      //   原记录 01-23-4C-99 → 01-23-4C-40            exit 0（__tail_hex:"99" 被丢）
+      //
+      // 手写 JSONL、别的工具把 `__` 键过滤掉、或只保留了两把键里的一把，
+      // 都会走到这里。这是 NEW-5 / NEW-6「静默降级」家族的第三个入口：
+      // 前两个是「键内容损坏」与「已知字段收到对象」，这个是「键整块缺席」。
+      //
+      // 判据必须**留出「空格填充不携带」这条合法路径**：decode 对空洞里全是
+      // 0x40 的形态本来就不发旁路键（「未赋值工作存储区」惯例，
+      // `redefines_tail_test.mbt` / `filler_fidelity_test.mbt` 锁的就是它），
+      // 那种行缺载体是**正常**的，写回 0x40 与原记录逐字节相同。
+      //
+      // 真正的判据是「**没有字段值解释这段字节**」：空洞位置若被一个
+      // `field_will_write` 为真的叶子覆盖（REDEFINES 视图有非空值、其他字段
+      // 占着这段），那几字节由字段值重新生成，旁路键本来就该缺席（decode
+      // 同理不给被值覆盖的位置发快照），不报错；反之没有任何值指向它，
+      // 缺载体就是数据丢失。口径与空洞定义同源（`written_intervals`），
+      // 不另立一套 —— 两条路径结论不同步正是 CB-16 那种缺陷的根源。
+      //
+      // `__` 保留键只可能来自 decode 的输出或蓄意构造，报错没有误伤面。
+      let tail_sup = primary_tail_gaps(layout, None)
+      let filler_sup = filler_gaps(layout, None)
+      let tail_open = unaddressed_gap_bytes(layout, values, tail_sup)
+      let filler_open = unaddressed_gap_bytes(layout, values, filler_sup)
+      // 载体有三种：JSONL 的两把十六进制键，以及内存路径的
+      // `__record_bytes`（宽容解码附带的整条记录，按绝对偏移回填）。
+      // 只认前两者会把「decode_record 的返回值直接喂给 encode_record」这条
+      // 内存路径判成缺载体 —— 它其实什么都不缺。
+      let has_any_carrier = values.contains("__tail_hex") ||
+        values.contains("__filler_hex") ||
+        values.contains("__record_bytes")
+      if !has_any_carrier && (tail_open > 0 || filler_open > 0) {
+        let mut where_bits = ""
+        if tail_open > 0 {
+          where_bits = " \{tail_open} tail-gap byte(s) (__tail_hex)"
+        }
+        if filler_open > 0 {
+          where_bits = where_bits +
+            " \{filler_open} FILLER-gap byte(s) (__filler_hex)"
+        }
+        return Err(
+          InvalidBypass(
+            "hole bytes have no carrier: \{where_bits} would silently become 0x40. This row has no __tail_hex / __filler_hex / __record_bytes and no field value covering those bytes, so nothing can restore them; give the decode snapshot back, or set a value that covers them",
+          ),
+        )
+      }
     }
   }
   Ok(w.to_bytes())
+}
+
+///|
+/// 空洞区间里**没有任何视图值能解释**、因而不可能有字节来源的字节数。
+///
+/// 「能解释」= 该位置被一个 `field_explains_gap_bytes` 为真的叶子区间
+/// 覆盖（视图的值确实携带内容，那几字节由编码器重新生成）。这样的位置
+/// 只有旁路键能提供原始字节，缺键就是数据丢失。
+fn unaddressed_gap_bytes(
+  layout : RecordLayout,
+  values : Map[String, CellValue],
+  gaps : Array[(Int32, Int32)],
+) -> Int32 {
+  if gaps.length() == 0 {
+    return 0
+  }
+  let covered = written_intervals(layout, Some(values))
+  let mut n = 0
+  for (s, e) in gaps {
+    let mut p = s
+    while p < e {
+      if !gap_has(covered, p) {
+        n = n + 1
+      }
+      p = p + 1
+    }
+  }
+  n
 }
 
 ///|
