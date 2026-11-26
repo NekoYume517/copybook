@@ -228,6 +228,39 @@ fn is_blank(c : Char) -> Bool {
 }
 
 ///|
+/// 把错误消息里**回显的用户输入字符**转义成可打印形式（CB-19-3，2026-11-27
+/// 审计）。
+///
+/// ## 为什么需要
+///
+/// 诊断消息里内插的字符来自**不可信的 copybook 文本**。`PIC X<ESC>(2)` 这类
+/// 输入修复前会让 stderr 直接带上 `0x1B`：
+///
+///     PIC 模式串中出现非法字符 '<ESC>'
+///
+/// 终端收到 ESC 后把后续字节当转义序列，用户看到的是被吞掉/擦掉的一行；
+/// `0x07`（BEL）会响铃，`0x7F`（DEL）会删掉前一个字符。用户既看不到「哪个
+/// 字符非法」，日志/CI 输出也被控制序列污染。
+///
+/// ## 规则
+///
+/// C0 控制字符（`0x00`-`0x1F`）与 `0x7F` 写成 `\xNN`（两位小写十六进制）；
+/// 其余字符原样返回 —— 净化只针对控制字符，既有消息文本不变。
+fn escape_control_for_message(c : Char) -> String {
+  let code = c.to_int()
+  if code < 0x20 || code == 0x7F {
+    let digits = [
+      "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b", "c", "d", "e",
+      "f",
+    ]
+    let hi = digits[(code >> 4) & 0xF]
+    let lo = digits[code & 0xF]
+    return "\\x\{hi}\{lo}"
+  }
+  c.to_string()
+}
+
+///|
 /// 判断累积中的逻辑行是否有未闭合的引号（' 与 " 各自计数，双写转义
 /// 不算重新开引号——COBOL 字面量不允许跨行重开同类引号外的第二种引号，
 /// 这里只需可靠的「是否在字面量内」信号，供续行拼接决定是否补空格）。
@@ -900,7 +933,11 @@ fn tokenize_lines(
       }
 
       // 其它字符（如 `,` `;` 在语句层面出现）→ 明确报错，不静默跳过
-      raise LexError(line_no, col, "无法识别的字符 '\{c}'")
+      raise LexError(
+        line_no,
+        col,
+        "无法识别的字符 '\{escape_control_for_message(c)}'",
+      )
     }
   }
 
@@ -1059,7 +1096,7 @@ fn scan_pic(
       raise LexError(
         line_no,
         pat_col,
-        "PIC 模式串中出现非法字符 '\{ch}'",
+        "PIC 模式串中出现非法字符 '\{escape_control_for_message(ch)}'",
       )
     }
   }

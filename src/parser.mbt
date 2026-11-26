@@ -1528,7 +1528,7 @@ pub fn parse_pic_clause(
         raise SyntaxError(
           line,
           column,
-          "PIC '\{text}' 里出现非法字符 '\{other}'",
+          "PIC '\{text}' 里出现非法字符 '\{escape_control_for_message(other)}'",
         )
     }
   }
@@ -1666,7 +1666,7 @@ fn parse_edited(
         raise SyntaxError(
           line,
           column,
-          "PIC '\{text}' 里出现非法字符 '\{other}'",
+          "PIC '\{text}' 里出现非法字符 '\{escape_control_for_message(other)}'",
         )
     }
   }
