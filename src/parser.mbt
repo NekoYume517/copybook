@@ -962,14 +962,38 @@ fn parse_entry_clauses(
       // 只拒绝 SEPARATE：`SIGN IS LEADING` / `TRAILING`（非独立）对编辑型
       // 不产生额外字节，本实现按模式串语义处理，不算静默丢弃。
       //
-      // `PicCategory` 没有实现 Eq（见 CONTRACT-FIX.md），用模式匹配判定。
+      // **`JUSTIFIED RIGHT` 在编辑型上同样必须拒绝**（CB-19-2，2026-11-27
+      // 审计）：IBM 的 `JUSTIFIED` 只改变字符类基本项的填充方向；编辑型的每个
+      // 字符位置由 PICTURE 模式串（`ZZ9V99` / `$$$$9.99` / `CR` / `DB`）固定，
+      // 右对齐会破坏小数点与符号位置。旧实现照收声明、编码恒左对齐 ——
+      // copybook 声明了一个编码器完全不理会、也不告诉调用者的属性，而
+      // `verify` 因两侧用同一份被忽略的布局仍报 byte-identical（与 CB-B12
+      // 同形）。组项上的 JUSTIFIED 早已被拒绝，这里把判据补齐到叶项。
       match pc.category {
-        Edited =>
+        Edited => {
           if sign_separate {
             raise SyntaxError(
               pic_line,
               1,
               "编辑型 PIC '\{pc.pic_text}' 不允许 SIGN ... SEPARATE：edited item 的符号位置由模式串自身表达（+ / - / CR / DB / S），不能再叠加独立的符号字节（IBM 规则）",
+            )
+          }
+          if is_justified_right {
+            raise SyntaxError(
+              justified_line,
+              justified_col,
+              "编辑型 PIC '\{pc.pic_text}' 不允许 JUSTIFIED RIGHT：edited item 的每个字符位置由模式串（Z 9 美元符 + - CR DB 与插入字符）固定，右对齐会破坏小数点与符号位置；JUSTIFIED 只对基本字符项（alphabetic / alphanumeric / national）有意义（IBM 规则）",
+            )
+          }
+        }
+        // 数值项（zoned / COMP / COMP-3 / COMP-1 / COMP-2）没有「填充方向」：
+        // 存储是数字位与符号半字节。照收后编码按左对齐意味着子句被静默丢弃。
+        Numeric =>
+          if is_justified_right {
+            raise SyntaxError(
+              justified_line,
+              justified_col,
+              "数值项 PIC '\{pc.pic_text}' 不允许 JUSTIFIED RIGHT：数值的存储是数字位与符号半字节，没有字符类的填充方向；JUSTIFIED 只对基本字符项（alphabetic / alphanumeric / national）有意义（IBM 规则）",
             )
           }
         // **字符项上不能写 SIGN**（2026-11-13 审计）：COBOL 的 SIGN 子句只能

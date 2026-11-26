@@ -98,16 +98,20 @@ test "CB-B5: 未声明 JUSTIFIED 的字段仍左对齐（不伤既有行为）" 
     Err(e) => fail("encode must succeed: \{e.to_display()}")
     Ok(bs) => assert_eq(bs, b"\xC1\xC2\x40\x40\x40")
   }
-  // 数值 / 编辑型即便写了 JUSTIFIED RIGHT 也按原样（COBOL 只对字符项有意义）
-  let num = just_layout("01 R.\n    05 A PIC 9(3) JUSTIFIED RIGHT.\n")
-  assert_true(num.find("R.A").unwrap().pic.justified_right)
-  let nrow : Map[String, CellValue] = Map([])
-  nrow["R.A"] = Int(42L)
-  match encode_record(num, nrow) {
-    Err(e) => fail("numeric encode must succeed: \{e.to_display()}")
-    // 3 位 zoned，未符号化：F0 F4 F2（左对齐语义在此不适用）
-    Ok(bs) => assert_eq(bs, b"\xF0\xF4\xF2")
+  // 数值 / 编辑型写 JUSTIFIED RIGHT 会在**解析期被拒绝**（CB-19-2，2026-11-27）：
+  // 旧实现照收标志、编码恒左对齐，等于把一个编码器完全不理会、也不告诉调用者
+  // 的属性写进 copybook（`verify` 两侧用同一份被忽略的布局仍报 byte-identical）。
+  // 判据与组项 JUSTIFIED、CB-B12 的 SIGN SEPARATE 同源。
+  let rejected = try {
+    let _ = just_layout("01 R.\n    05 A PIC 9(3) JUSTIFIED RIGHT.\n")
+    "ok"
+  } catch {
+    e => e.to_display()
+  } noraise {
+    _ => "ok"
   }
+  assert_true(rejected != "ok")
+  assert_true(rejected.contains("JUSTIFIED"))
 }
 
 ///|
