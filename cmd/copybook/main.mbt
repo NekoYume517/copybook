@@ -692,8 +692,31 @@ fn cmd_verify(opts : Options) -> Int32 {
     checked = checked + 1
     pos = pos + rec_len
   }
-  eprintln("verify: \{checked} record(s) OK, byte-identical roundtrip")
+  eprintln(verify_conclusion(layout.byte_length, rec_len, checked))
   EXIT_OK
+}
+
+///|
+/// verify 成功时的结论文案。
+///
+/// `rec_len` 与 `layout_len` 的关系决定「往返」的覆盖范围：`cmd_verify`
+/// 在 `rec_len > layout_len` 时只把每条记录的前 `layout_len` 字节喂给
+/// `roundtrip_check`（整记录重编码必然在布局长度处 mismatch），尾字节
+/// 根本不参与往返。结论文案必须跟着这个夹取一起改口，否则用户拿到的
+/// 是「同一行输出里先声明没检查、再宣称逐字节一致」。
+fn verify_conclusion(
+  layout_len : Int32,
+  rec_len : Int32,
+  checked : Int32,
+) -> String {
+  if rec_len > layout_len {
+    // 尾字节不在布局内、也就没参加往返：encode 只写 layout_len 字节/记录，
+    // 所以整个文件的 `encode(decode(bytes)) == bytes` **不成立**。这里把
+    // 两句都写出来，避免调用方把「前 L 字节一致」读成「文件无损」。
+    "verify: \{checked} record(s) OK, first \{layout_len} byte(s) of each record roundtrip byte-identical; the trailing \{rec_len - layout_len} byte(s) per record are outside the copybook and are NOT part of the roundtrip"
+  } else {
+    "verify: \{checked} record(s) OK, byte-identical roundtrip"
+  }
 }
 
 ///|
