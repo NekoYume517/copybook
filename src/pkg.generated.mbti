@@ -177,6 +177,13 @@ pub(all) enum FloatMode {
   Ieee754
 }
 
+pub(all) struct GapCarrierReport {
+  gaps : Array[(Int32, Int32)]
+  carried : Array[(Int32, Int32)]
+  open_gaps : Array[(Int32, Int32)]
+  missing : Int32
+}
+
 pub(all) enum PicCategory {
   Numeric
   Alphabetic

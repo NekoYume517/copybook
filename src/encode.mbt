@@ -1199,6 +1199,230 @@ fn complement_gaps(
 }
 
 ///|
+/// **每个空洞字节由谁负责** —— 单一权威实现（CB-21-1，2026-11-29 审计）。
+///
+/// ## 为什么需要它
+///
+/// 「这段空洞有没有字节来源」这个问题此前被问了三次，三次用了不同信息源：
+///
+///   A. `unaddressed_gap_bytes` + `has_any_carrier`：只看「键在不在」；
+///   B. 长度守卫：判的是「比**布局**短」，不是「比**仍需回填的字节**短」；
+///   C. `restore` 闭包：超界位置静默不写，落回 Writer 初值 `0x40`。
+///
+/// 三条各自为政，于是出现两个方向都错的状态：无关的空洞被长度守卫误挡，
+/// 真正的缺口被存在性判据放过（`exit 0` 静默写 `0x40`）。判据不同源时，
+/// **哪个先跑**决定了行为，而不是**哪个对** —— CB-16 的同族土壤。
+///
+/// ## 语义
+///
+/// 逐字节回答归属，按「空洞区间」聚合输出三段互不重叠的结论：
+///
+/// - `gaps`：**仍然存在**的空洞（没有任何字段值会写这一字节）
+/// - `carried`：其中**有字节载体覆盖**的区间（回填只会写这些位置）
+/// - `open_gaps`：其中**没有载体覆盖**的区间（`missing` 个字节）
+///
+/// 三处判断全部从这一份报告派生，不再各问各的：
+///
+/// | 用途 | 改前 | 改后 |
+/// |---|---|---|
+/// | 缺载体报错 | `has_any_carrier`（存在性） | `report.missing > 0` |
+/// | 长度守卫 | `bs.length() < layout.byte_length` | 载体必须覆盖 `report.carried` |
+/// | 回填 | `if src < bs.length()`（静默跳过） | 只回填 `report.carried`，越界不可能 |
+pub(all) struct GapCarrierReport {
+  /// 仍然存在的空洞（没有任何字段值写这些字节）
+  gaps : Array[(Int32, Int32)]
+  /// 其中**有字节载体覆盖**的区间 —— 回填只会写这些位置
+  carried : Array[(Int32, Int32)]
+  /// 其中**没有载体**的区间 —— 这些字节无来源，必须报错
+  open_gaps : Array[(Int32, Int32)]
+  /// `open_gaps` 的字节总数（= 无处可取的字节数）
+  missing : Int32
+}
+
+///|
+/// 计算空洞的归属报告。**唯一权威**：缺载体判定、载体长度守卫、回填选择
+/// 三处都必须调它（CB-21-1）。
+///
+/// 「有载体覆盖」的定义按载体类型分别取：
+///
+/// - `__record_bytes`（内存路径，整条记录）：覆盖 `[0, len)`，
+///   即只有 `pos < bs.length()` 的洞字节有来源；
+/// - `__tail_hex` / `__filler_hex`（JSONL 路径）：由配套几何
+///   （`__tail_gap` / `__filler_gap`）给出精确区间；没有几何时按**旧 JSONL**
+///   的长度匹配语义处理（长度恰好等于当前空洞 = 全覆盖；等于超集长度 =
+///   按超集起点摊开），这一段保持 B1 之前的兼容性行为不变；
+/// - 两者都没有：`open_gaps` 非空 → 调用方报错。
+///
+/// 载体之间的互斥（`__record_bytes` 不能和 `__*_hex` 同时出现）与几何合法性
+/// 校验仍然在 `encode_record` 里做 —— 那是**输入合法性**，不是归属问题，
+/// 保留在原处有独立的报错文案（C10 / B1 的既有判据，不能合并掉）。
+fn gap_carrier_report(
+  layout : RecordLayout,
+  values : Map[String, CellValue],
+) -> GapCarrierReport {
+  // 「仍然存在的空洞」= 两个集合的并集（尾部 + 中部）。它们互不重叠
+  // （`filler_gaps` 上界是主视图结束偏移，`primary_tail_gaps` 下界是它）。
+  let tail = primary_tail_gaps(layout, Some(values))
+  let filler = filler_gaps(layout, Some(values))
+  let all : Array[(Int32, Int32)] = []
+  for iv in tail {
+    all.push(iv)
+  }
+  for iv in filler {
+    all.push(iv)
+  }
+  all.sort_by(fn(x, y) { x.0 - y.0 })
+  // 每个字节是否有载体
+  let carried : Array[(Int32, Int32)] = []
+  let open : Array[(Int32, Int32)] = []
+  let covered = carrier_covered_positions(layout, values, tail, filler)
+  let mut i = 0
+  while i < all.length() {
+    let (s, e) = all[i]
+    let mut p = s
+    let mut run_start = s
+    let mut run_has = gap_has(covered, s)
+    while p < e {
+      let here = gap_has(covered, p)
+      if here != run_has {
+        if run_has {
+          carried.push((run_start, p))
+        } else {
+          open.push((run_start, p))
+        }
+        run_start = p
+        run_has = here
+      }
+      p = p + 1
+    }
+    if e > run_start {
+      if run_has {
+        carried.push((run_start, e))
+      } else {
+        open.push((run_start, e))
+      }
+    }
+    i = i + 1
+  }
+  let mut missing = 0
+  for (s, e) in open {
+    missing = missing + (e - s)
+  }
+  { gaps: all, carried, open_gaps: open, missing, }
+}
+
+///|
+/// 空洞字节里**有载体覆盖**的那些位置（左闭右开区间数组）。
+///
+/// 由 `gap_carrier_report` 独占调用 —— 别的路径不要再自己算一遍
+/// （那正是 CB-21-1 的病根）。
+fn carrier_covered_positions(
+  layout : RecordLayout,
+  values : Map[String, CellValue],
+  tail : Array[(Int32, Int32)],
+  filler : Array[(Int32, Int32)],
+) -> Array[(Int32, Int32)] {
+  let out : Array[(Int32, Int32)] = []
+  // 内存路径：整条记录，按绝对偏移覆盖 [0, min(len, byte_length))
+  match values.get("__record_bytes") {
+    Some(Bytes(bs)) => {
+      let hi = if bs.length() < layout.byte_length {
+        bs.length()
+      } else {
+        layout.byte_length
+      }
+      if hi > 0 {
+        out.push((0, hi))
+      }
+      return out
+    }
+    _ => ()
+  }
+  // JSONL 路径：几何精确映射，旧格式按长度匹配（B1 之前的行为）
+  append_jsonl_carrier(out, values, "__tail_hex", "__tail_gap", tail)
+  append_jsonl_carrier(out, values, "__filler_hex", "__filler_gap", filler)
+  out
+}
+
+///|
+/// JSONL 载体在某个洞集合上的覆盖区间。
+fn append_jsonl_carrier(
+  out : Array[(Int32, Int32)],
+  values : Map[String, CellValue],
+  hex_key : String,
+  gap_key : String,
+  superset : Array[(Int32, Int32)],
+) -> Unit {
+  let bs = match values.get(hex_key) {
+    Some(Bytes(b)) => b
+    _ => return
+  }
+  if superset.length() == 0 {
+    // 这类洞不存在；无论给多少字节都没有位置可写
+    return
+  }
+  let sup_total = gap_total_of(superset)
+  let spec = match values.get(gap_key) {
+    Some(Text(s)) =>
+      match gap_spec_ranges(s) {
+        Some(r) => Some(r)
+        None => None
+      }
+    _ => None
+  }
+  match spec {
+    Some(ranges) => {
+      // 带几何：字节精确落在这些区间上（字节数与区间总数不等时
+      // `encode_record` 会报 CB-A2 的错，这里不替它兜）。
+      for r in ranges {
+        out.push(r)
+      }
+      // **几何比当前空洞短 = 已声明容忍**（C7，2026-11-17；CB-21-1 重新接线）：
+      // 被几何省略、又没有值覆盖的那几字节，语义是「某个视图刚被置成 null，
+      // 那一段本来就没有旧字节」，按未赋值存储写 0x40 —— 这是**声明过**的
+      // 行为（API.md §6、`jsonl_tail_gap_declared_tolerance_test.mbt` 锁定）。
+      // 所以那几字节要有归属：不是 `Missing`，而是「调用方已声明的未赋值」。
+      // 用一条**单独的**归属区间表达，避免它与「压根没给载体」混成一个结论
+      // —— 后者必须报错（CB-20-3），前者必须写 0x40。
+      for iv in superset {
+        out.push(iv)
+      }
+    }
+    _ =>
+      // 旧 JSONL（无几何）：与 B1 之前逐字一致的长度匹配 ——
+      // 长度恰好等于当前洞集 → 顺序摊开；等于超集长度 → 按超集起点摊开；
+      // 其它长度既没有归属也不报错（由 `encode_record` 报 CB-A2）。
+      // 这里只能给「洞集本身」，因为归属是**位置**问题，而旧格式不携带位置。
+      if bs.length() == total_of(superset) {
+        for r in superset {
+          out.push(r)
+        }
+      } else {
+        ()
+      }
+  }
+}
+
+///|
+fn gap_total_of(gaps : Array[(Int32, Int32)]) -> Int32 {
+  let mut n = 0
+  for (s, e) in gaps {
+    n = n + (e - s)
+  }
+  n
+}
+
+///|
+/// 区间数组的字节总数。
+fn total_of(gaps : Array[(Int32, Int32)]) -> Int32 {
+  let mut n = 0
+  for (s, e) in gaps {
+    n = n + (e - s)
+  }
+  n
+}
+
+///|
 /// 计算布局的「尾部空洞」：`[主视图结束偏移, byte_length)` 中**没有字段
 /// 写入**的字节 —— 典型形态是重定义视图比主视图长、且该视图解不出。
 ///
@@ -1666,6 +1890,11 @@ pub fn encode_record(
   // 递增的 `idx`，于是先处理的区间吃掉第二段的字节、第二段从越界处取到
   // 空值 —— 合并了「中部 FILLER + REDEFINES 尾部」的布局因此静默损坏。
   // 内存路径的 `__record_bytes` 是整条记录，按绝对偏移回填。
+  //
+  // **CB-21-1（2026-11-29）**：回填范围不再由这里自己判断，而是读
+  // `gap_carrier_report` 算好的 `carried`（有载体覆盖的区间）。这样
+  // 「缺载体报错」「载体长度守卫」「回填」三处对同一个区间给出同一个结论，
+  // 不再出现「A 说够、B 说不够、C 静默跳过」的状态。
   let restore = fn(
     gaps : Array[(Int32, Int32)],
     bs : Bytes,
@@ -1676,7 +1905,10 @@ pub fn encode_record(
       let mut i = s
       while i < e {
         let src = if absolute { i } else { idx }
-        if src < bs.length() {
+        // 防御：`carried` 由 `gap_carrier_report` 产出，理论上恒在 bs 范围内。
+        // 保留这条是为了「万一归属算错」时不写出越界字节 —— 但它**不再**
+        // 承担「静默跳过缺口」的语义（那是 CB-21-1 修掉的东西）。
+        if src >= 0 && src < bs.length() {
           w.set(i, bs[src].to_int())
         }
         idx = idx + 1
@@ -1684,6 +1916,7 @@ pub fn encode_record(
       }
     }
   }
+  let report = gap_carrier_report(layout, values)
   match values.get("__record_bytes") {
     Some(Bytes(bs)) => {
       // **同一个洞的字节只能有一个载体**（C10，2026-11-17 审计）：`__record_bytes`
@@ -1699,21 +1932,24 @@ pub fn encode_record(
           )
         }
       }
-      // **长度不足必须报错**（同一条审计）：`restore` 闭包是
-      // `if src < bs.length() { w.set(...) }`，比布局短的 `__record_bytes` 会让
-      // 没被覆盖的洞落回 Writer 初值 0x40 —— 与 CB-15 修复前的损坏形态完全一样，
-      // 只是入口换成了内存路径。decode 写出的是**整条记录**（可能长于布局，
-      // 因为宽容解码接受超长输入），所以只拒绝「短」，不拒绝「长」。
-      if bs.length() < layout.byte_length {
+      // **载体必须覆盖仍需回填的每一字节**（CB-21-1，2026-11-29）。
+      //
+      // 旧判据是 `bs.length() < layout.byte_length` —— 拿**布局长度**当门槛，
+      // 而真正该问的是「还需回填的空洞有没有被覆盖」。两个方向都错：
+      //   · 行里其余字段全有值、只剩 FILLER 洞时，快照正好够也报错；
+      //   · 只要有一个字节的缺口就够，但它偏偏又和 `has_any_carrier`
+      //     的「存在性」判据互不打照面 —— 谁先跑谁说了算。
+      // 现在统一读 `gap_carrier_report.missing`：它按**区间**算出哪些字节
+      // 没有归属，与回填用的 `carried` 是同一份数据。
+      if report.missing > 0 {
         return Err(
           InvalidBypass(
-            "__record_bytes must carry the whole record: layout is \{layout.byte_length} byte(s), got \{bs.length()}; hole bytes would silently fall back to 0x40",
+            "__record_bytes does not cover every remaining hole byte: \{report.missing} byte(s) have no source and would silently become 0x40 (got \{bs.length()} byte(s) for a \{layout.byte_length}-byte layout)",
           ),
         )
       }
-      // 内存路径：整条记录，两个集合都按绝对偏移取。
-      restore(primary_tail_gaps(layout, Some(values)), bs, true)
-      restore(filler_gaps(layout, Some(values)), bs, true)
+      // 内存路径：只回填「有载体覆盖」的区间，按绝对偏移取字节。
+      restore(report.carried, bs, true)
     }
     _ => {
       // JSONL 路径：各键独立回填（缺哪个就跳过哪个）。
@@ -1950,43 +2186,50 @@ pub fn encode_record(
       // `redefines_tail_test.mbt` / `filler_fidelity_test.mbt` 锁的就是它），
       // 那种行缺载体是**正常**的，写回 0x40 与原记录逐字节相同。
       //
-      // 真正的判据是「**没有字段值解释这段字节**」：空洞位置若被一个
-      // `field_will_write` 为真的叶子覆盖（REDEFINES 视图有非空值、其他字段
-      // 占着这段），那几字节由字段值重新生成，旁路键本来就该缺席（decode
-      // 同理不给被值覆盖的位置发快照），不报错；反之没有任何值指向它，
-      // 缺载体就是数据丢失。口径与空洞定义同源（`written_intervals`），
-      // 不另立一套 —— 两条路径结论不同步正是 CB-16 那种缺陷的根源。
-      //
-      // `__` 保留键只可能来自 decode 的输出或蓄意构造，报错没有误伤面。
-      let tail_sup = primary_tail_gaps(layout, None)
-      let filler_sup = filler_gaps(layout, None)
-      let tail_open = unaddressed_gap_bytes(layout, values, tail_sup)
-      let filler_open = unaddressed_gap_bytes(layout, values, filler_sup)
-      // 载体有三种：JSONL 的两把十六进制键，以及内存路径的
-      // `__record_bytes`（宽容解码附带的整条记录，按绝对偏移回填）。
-      // 只认前两者会把「decode_record 的返回值直接喂给 encode_record」这条
-      // 内存路径判成缺载体 —— 它其实什么都不缺。
-      let has_any_carrier = values.contains("__tail_hex") ||
-        values.contains("__filler_hex") ||
-        values.contains("__record_bytes")
-      if !has_any_carrier && (tail_open > 0 || filler_open > 0) {
+      // **CB-21-1（2026-11-29）**：这一段不再自己算「缺多少字节」，而是读
+      // `gap_carrier_report` 的 `open_gaps`。旧实现的 `has_any_carrier` 是
+      // 「存在性」判据 —— 只要行里出现任意一个载体键就整块跳过，于是它
+      // 与「载体够不够」的长度守卫（另一处判据）互相看不见，谁先跑谁说了算。
+      // 现在两处读的是同一份按区间算出的归属报告。
+      if report.open_gaps.length() > 0 {
+        // 归属报告里 `open_gaps` 已经把「有值覆盖」的字节排除掉了（那些
+        // 字节根本不在 `report.gaps` 里），所以这里剩下的就是真缺口。
         let mut where_bits = ""
-        if tail_open > 0 {
-          where_bits = " \{tail_open} tail-gap byte(s) (__tail_hex)"
+        for (s, e) in report.open_gaps {
+          where_bits = where_bits + " [\{s},\{e})"
         }
-        if filler_open > 0 {
-          where_bits = where_bits +
-            " \{filler_open} FILLER-gap byte(s) (__filler_hex)"
+        // 说明该给哪把键：尾部洞 vs 中部洞
+        let mut hint = ""
+        let tail_now = primary_tail_gaps(layout, Some(values))
+        let filler_now = filler_gaps(layout, Some(values))
+        if gap_intersects(report.open_gaps, tail_now) {
+          hint = hint + " __tail_hex"
+        }
+        if gap_intersects(report.open_gaps, filler_now) {
+          hint = hint + " __filler_hex"
         }
         return Err(
           InvalidBypass(
-            "hole bytes have no carrier: \{where_bits} would silently become 0x40. This row has no __tail_hex / __filler_hex / __record_bytes and no field value covering those bytes, so nothing can restore them; give the decode snapshot back, or set a value that covers them",
+            "hole bytes have no carrier: \{report.missing} byte(s) at\{where_bits} would silently become 0x40. Neither a field value nor a snapshot covers them; give the decode snapshot back (\{hint}), or set a value that covers them",
           ),
         )
       }
     }
   }
   Ok(w.to_bytes())
+}
+
+///|
+/// 两个区间集是否有交集（CB-21-1 的报错提示用）。
+fn gap_intersects(a : Array[(Int32, Int32)], b : Array[(Int32, Int32)]) -> Bool {
+  for (s1, e1) in a {
+    for (s2, e2) in b {
+      if s1 < e2 && s2 < e1 {
+        return true
+      }
+    }
+  }
+  false
 }
 
 ///|

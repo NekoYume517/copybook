@@ -52,9 +52,18 @@ test "gap combo: interior FILLER non-space + all-space tail (CB-15)" {
   let text = render_jsonl(layout, [row])
   assert_true(text.contains("\"__filler_hex\":\"c3c4\""))
   assert_false(text.contains("__tail_hex"))
+  // **CB-21-1（2026-11-29）**：`__filler_hex` 覆盖的只是中部洞 `[2,4)`；
+  // 尾部洞 `[6,8)` 既没有值也没有载体 —— 旧写法 `encode(...).unwrap()`
+  // 之所以一直绿，是因为那段尾部**恰好是 0x40**（驻点样本），静默写 0x40
+  // 与原记录逐字节相同。收敛后它必须报错（真的少了两个字节的来源）。
   let parsed = parse_jsonl_row(layout, text).unwrap()
-  // 修复前：字节被搬到尾部 C1 C2 40 40 12 3C C3 C4
-  assert_eq(encode_record(layout, parsed).unwrap(), record)
+  match encode_record(layout, parsed) {
+    Err(InvalidBypass(detail)) => assert_true(detail.contains("no carrier"))
+    Ok(_) => fail("尾部洞 [6,8) 无值无载体，不得静默写 0x40")
+    Err(e) => fail("应当是 InvalidBypass，实际 \{e.to_display()}")
+  }
+  // 内存路径（decode 的结果直接喂回）仍然是逐字节保真
+  assert_eq(encode_record(layout, row).unwrap(), record)
 }
 
 ///|
