@@ -109,7 +109,21 @@ IBM HFP 没有 IEEE 那种「负零是特殊值」的语义，但**符号位仍�
 | **`JUSTIFIED RIGHT` 的对齐方向** | `PicClause.justified_right` | 右对齐字段被写成左对齐：`"AB"` 落盘成 `C1 C2 40 40 40`（应 `40 40 40 C1 C2`），主机读出的值变成 `"AB   "` |
 | **`JUSTIFIED RIGHT` 的尾随空格**（补齐在左侧，尾随 0x40 / `00 20` 是数据） | 右侧 `FieldLayout` 不裁切：`decode` 对 JR 字段不 trim | `40 C1 C2 40 40` 被读成 `" AB"` 再右对齐重排成 `40 40 40 C1 C2`（L1 违约，2026-11-21 修复）；NATIONAL 同形 |
 
-**负零为什么单独列一行**：整数型的 `0` 与 `-0` 数值相等，但 zoned / packed 的符号半字节不同，字节也就不同。走 `decode → JSONL → encode` 时，文本这一环靠不住——JSON 的数字是 double，`-0` 经核心 JSON 词法后原文不保留，放手写的 `-0` 也可能被折叠成 `0`。所以 **JSONL 里的 `__nibbles.sign` 是符号的权威来源**：`0xD` 就是负号，系数为 0 时同样生效。修复前这条旁路只被当作"写回哪个半字节"的提示，`decode` 出 `-0`、`encode` 回 `+0`，而 `verify`（内存路径，`Decimal.negative` 没丢）还报 `byte-identical roundtrip` —— 两条路径互相矛盾。回归测试在 `src/negative_zero_test.mbt`，同时锁定文本链路与 `verify` 两条路径的结论一致。
+**负零为什么单独列一行**：整数型的 `0` 与 `-0` 数值相等，但 zoned / packed 的符号半字节不同，字节也就不同。走 `decode → JSONL → encode` 时，文本这一环靠不住——JSON 的数字是 double，`-0` 经核心 JSON 词法后原文不保留，放手写的 `-0` 也可能被折叠成 `0`。所以 **JSONL 里的 `__nibbles.sign` 是符号的权威来源**：`0xD` 就是负号，**系数为 0 且文本是负零（`-0`）或缺键时**同样生效。修复前这条旁路只被当作"写回哪个半字节"的提示，`decode` 出 `-0`、`encode` 回 `+0`，而 `verify`（内存路径，`Decimal.negative` 没丢）还报 `byte-identical roundtrip` —— 两条路径互相矛盾。回归测试在 `src/negative_zero_test.mbt`，同时锁定文本链路与 `verify` 两条路径的结论一致。
+
+**「系数为 0」的边界要写清**（CB-22-5，2026-11-27 审计）：`sign` 只在 decode
+够得着的那三档上与文本一一对应，两端在**自己能产出的组合**上一致，但手写的
+JSONL 可以构造出 decode 从不产出的组合 —— 那一档由字段值说了算：
+
+| 手写 JSONL | 写出 | 谁赢 |
+|---|---|---|
+| `{"R.A":-0,"__nibbles":{"R.A":{"sign":13}}}`（或 `null`） | `F0 F0 D0` | `sign` |
+| `{"R.A":0,"__nibbles":{"R.A":{"sign":13}}}` | `F0 F0 C0` | **字段值**（正零就是 C，`sign=13` 被忽略） |
+
+decode 三档实测：`C0 → {"R.A":0,"sign":12}`、`D0 → {"R.A":-0,"sign":13}`、
+`F0 → {"R.A":0,"sign":15}` —— 不产出「正零 + `sign=13`」，所以这不构成字节
+保真缺口；但「`0xD` 系数为 0 时同样生效」的说法只对**负零**成立，照上表读。
+回归：`src/zero_sign_nibble_matrix_test.mbt`。
 
 **`__nibbles` 只属于 zoned / packed**：只有 `PIC 9(n)` 的 DISPLAY（zoned）
 与 `COMP-3`（packed）在存储层有符号半字节/填充半字节。落在文本、NATIONAL、
