@@ -500,6 +500,69 @@ pub fn layout_sync_warning(count : Int32) -> String {
 /// 与 IBM 不同，别拿去读主机数据」；这条说的是「你写了 SYNC，但它什么也没
 /// 影响」。合成一句会让 `affected_leaves == 0` 的情形报出「0 field(s)
 /// declare ...」，比不说更糟。文案只有一个实现：CLI 的 stderr 与
+
+///|
+/// 「布局里有空洞」的**汇总告警文案** —— 只有一个实现（CB-21-3，2026-11-29）。
+///
+/// 空洞指记录里没有任何字段承载、只能靠旁路键保真的字节（FILLER 中部区，
+/// 或只有重定义视图覆盖、而该视图解不出的尾部区）。本工具内部可以逐字节往返
+/// （`verify` 的 `__record_bytes` 会回填），但**离开 `decode → JSONL → encode`
+/// 这条侧道**（手写 JSONL、外部工具过滤 `__` 键、把值喂给下游系统），这几个
+/// 字节就没有来源、会落回 `0x40`。四个子命令此前没有一处提过这件事。
+///
+
+///|
+/// 布局**静态**空洞：无论行值如何、都不会被任何字段写到的字节区间
+/// （CB-21-3，2026-11-29）。
+///
+/// 两种来源：
+///   · **FILLER 区 / 叶子之间的裂缝**（`filler_gaps(layout, None)`）；
+///   · **主视图末端之外的区间**（`primary_tail_gaps(layout, None)`）。
+///
+/// 与 `gap_carrier_report` 的关系：那个函数按**具体行值**算「某个视图这次
+/// 有没有写」，本函数拿不到行值，所以问的是「全视图都不写时的洞」= 上界。
+/// 两者共用同一对底层函数（`filler_gaps` / `primary_tail_gaps`），不重复实现
+/// 区间逻辑；区别只在 `values` 传 `None` 还是 `Some(row)`。
+pub fn layout_static_gaps(layout : RecordLayout) -> Array[(Int32, Int32)] {
+  let out : Array[(Int32, Int32)] = []
+  for iv in primary_tail_gaps(layout, None) {
+    out.push(iv)
+  }
+  for iv in filler_gaps(layout, None) {
+    out.push(iv)
+  }
+  out.sort_by(fn(x, y) { x.0 - y.0 })
+  out
+}
+
+///|
+/// `gaps` 为空时返回空串（调用方据此决定是否打印）。
+pub fn layout_hole_warning(gaps : Array[(Int32, Int32)]) -> String {
+  if gaps.length() == 0 {
+    return ""
+  }
+  let mut total = 0
+  let sb = StringBuilder()
+  sb.write_string("warning: this layout has \{gaps.length()} hole segment(s), ")
+  let mut first = true
+  for (s, e) in gaps {
+    total = total + (e - s)
+    if first {
+      sb.write_string("\{e - s} byte(s) at ")
+      first = false
+    } else {
+      sb.write_string(", \{e - s} byte(s) at ")
+    }
+    sb.write_string("[\{s},\{e})")
+  }
+  ignore(total)
+  sb.write_string(
+    ": no field in the copybook covers these bytes. They survive only through the bypass keys (__tail_hex / __filler_hex / __record_bytes) carrying them out of decode; once that side channel is gone (hand-written JSONL, a tool that strips __ keys, values fed to another system) those bytes silently become 0x40. That is a space character in EBCDIC, so the damaged record still looks valid.",
+  )
+  sb.to_string()
+}
+
+///|
 /// `render_layout` 的报告共用它。
 pub fn layout_sync_inert_warning(paths : Array[String]) -> String {
   let joined = paths.join(", ")
@@ -623,6 +686,23 @@ pub fn render_layout(layout : RecordLayout) -> String {
     )
   }
   // 去掉末尾多余的换行：报告的行数应当恰好等于 2 + 1 + fields.length()
+
+  // **空洞的机读汇总**（CB-21-3，2026-11-29）：FILLER 区与主视图之外的区间
+  // 在报告里**不出现**（它们不是字段），但它们的字节只靠旁路键保真。脚本要
+  // 能判断「这份布局有没有洞」，所以给一行固定格式；无洞时不追加。
+  // 这是**静态**洞（与行值无关），JSONL 侧的动态洞另由 decode 的旁路键体现。
+  let static_gaps = layout_static_gaps(layout)
+  if static_gaps.length() > 0 {
+    let mut hole_bytes = 0
+    for (hs, he) in static_gaps {
+      hole_bytes = hole_bytes + (he - hs)
+    }
+    sb.write_char('\n')
+    sb.write_string(
+      "HOLES: \{static_gaps.length()} segment(s), \{hole_bytes} byte(s)",
+    )
+    sb.write_char('\n')
+  }
   // （标题、空行、表头、每个字段一行），最后一个字段行以 \n 结束即可。
   let s = sb.to_string()
   let n = s.length()

@@ -50,6 +50,10 @@ pub fn is_ebcdic_digit(Int32) -> Bool
 
 pub fn is_ebcdic_space(Int32) -> Bool
 
+pub fn layout_hole_warning(Array[(Int32, Int32)]) -> String
+
+pub fn layout_static_gaps(RecordLayout) -> Array[(Int32, Int32)]
+
 pub fn layout_sync_inert_warning(Array[String]) -> String
 
 pub fn layout_sync_warning(Int32) -> String

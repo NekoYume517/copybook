@@ -481,6 +481,37 @@ OFFSET  LENGTH  OCCURS  TYPE              NAME
     52       2       1  9(2) DISPLAY      CUSTOMER-RECORD.FLAGS.TIER
 ```
 
+**行数契约（CB-21-3，2026-11-29 修订）**：
+
+| 布局有空洞？ | 行数 |
+|---|---|
+| 无 | `2 + 1 + fields.length()`（标题 + 空行 + 表头 + 每个字段一行） |
+| 有 | `2 + 1 + fields.length() + 2`（末尾多「空行 + `HOLES:` 行」） |
+
+**`HOLES:` 是新增的对外输出**（不是「补上一直缺的」）——它回答一个此前
+四个子命令都没有回答的问题：「这份布局有几段没有字段承载、只能靠旁路键
+保真的字节」。格式固定为
+
+```
+HOLES: <段数> segment(s), <字节数> byte(s)
+```
+
+无洞时**不追加**（包括不追加空行），所以无洞布局的输出与本轮之前逐字节
+相同。这是有意为之：`render_layout` 的样例输出被 `src/output_test.mbt` 与
+`docs/DEMO.md` 逐字符锁死，任何无条件追加都会打破那些断言。
+
+判据与 `src/encode.mbt` 的 `filler_gaps` / `primary_tail_gaps` 同源
+（`RecordLayout::layout_static_gaps` 只是把两者在 `values = None` 下的结果
+并起来），不新起一套区间逻辑。
+
+`decode` / `encode` / `verify` 在读到同一份布局时，会在 **stderr** 上打
+同一条告警（`layout_hole_warning`），说明那几段字节**只活在
+`decode → JSONL → encode` 这条旁道里**：一旦离开（手写 JSONL、外部工具
+过滤 `__` 键、把值喂给下游），它们会静默变成 `0x40` —— 合法空格，损坏的
+记录看着仍然正常。`layout` 子命令**不**重复打到 stderr（报告里已有
+`HOLES:` 行，重复会让 `2>&1` 合并后出现两遍）。回归：
+`src/layout_hole_warning_test.mbt`、`cmd/copybook/hole_warning_wiring_wbtest.mbt`。
+
 ## 7. CLI `cmd/copybook/main.mbt`
 
 ```

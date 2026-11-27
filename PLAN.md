@@ -2,7 +2,7 @@
 
 > 仓库：<https://github.com/NekoYume517/copybook>
 > 赛事：MoonBit Hackathon 2026
-> 状态：已交付（`moon check` 0 错误 · 793 测试全绿 · 本地四门全绿 · wasm 构建通过）
+> 状态：已交付（`moon check` 0 错误 · 799 测试全绿 · 本地四门全绿 · wasm 构建通过）
 
 ---
 

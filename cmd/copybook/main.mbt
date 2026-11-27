@@ -385,6 +385,30 @@ fn read_binary_file(path : String) -> Bytes? {
 /// 汇总警告同源（`@lib.layout_sync_warning`），不可能再分叉。
 ///
 /// 「组上声明但没有任何基本项受影响」的情形单列一条**不同的**诊断，
+
+///|
+/// 布局有空洞时在 stderr 上出声（CB-21-3，2026-11-29）。
+///
+/// 「空洞」= 记录里没有任何字段承载、只能靠旁路键保真的字节（FILLER 中部区，
+/// 或只有重定义视图覆盖而该视图解不出的尾部区）。本工具内部能逐字节往返
+/// （`__record_bytes` 回填），所以 `verify` 报 `byte-identical` 是真的 ——
+/// 但那几个字节**只活在 `decode → JSONL → encode` 这条侧道里**。手写 JSONL、
+/// 外部工具过滤 `__` 键、把值喂给下游系统之后，它们会静默变成 0x40（合法空格，
+/// 损坏的记录看着仍然正常）。四个子命令此前没有一处提过这件事。
+///
+/// `layout` 不调它：报告里已有 `HOLES:` 机读行，重复打到 stderr 会让
+/// `2>&1` 合并后出现两遍。
+///
+/// 判据与 `@lib.layout_static_gaps` 同源（后者又复用 `filler_gaps` /
+/// `primary_tail_gaps`，与 `gap_carrier_report` 是同一对底层函数）。
+fn warn_layout_holes(layout : @lib.RecordLayout) -> Unit {
+  let gaps = @lib.layout_static_gaps(layout)
+  if gaps.length() > 0 {
+    eprintln(@lib.layout_hole_warning(gaps))
+  }
+}
+
+///|
 /// 不混进字段数里（源文本里写了 SYNC 却一个偏移都没变，用户需要知道）。
 fn warn_sync_layout(layout : @lib.RecordLayout) -> Unit {
   let sync = layout.sync_summary()
@@ -487,6 +511,7 @@ fn cmd_decode(opts : Options) -> Int32 {
     )
   }
   warn_sync_layout(layout)
+  warn_layout_holes(layout)
   // 空文件不是「成功解码了 0 条记录」，而是没有数据可解。
   // 静默返回 0 会让调用方（尤其是脚本）误以为文件正常。
   if data.length() == 0 {
@@ -551,6 +576,7 @@ fn cmd_encode(opts : Options) -> Int32 {
     return EXIT_DATA
   }
   warn_sync_layout(layout)
+  warn_layout_holes(layout)
   let text = match read_text_file(json_path) {
     Some(Ok(t)) => t
     Some(Err(msg)) => {
@@ -661,6 +687,7 @@ fn cmd_verify(opts : Options) -> Int32 {
   // 变成「结论先成立、然后才提醒」。`layout` 子命令的 stdout 报告里已有
   // 逐行 + 汇总标注，这里只对 verify 的 stderr 负责。
   warn_sync_layout(layout)
+  warn_layout_holes(layout)
   let data = match read_binary_file(data_path) {
     Some(b) => b
     None => {

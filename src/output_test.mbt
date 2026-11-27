@@ -188,3 +188,34 @@ test "render_jsonl 空行集返回空串" {
   let rows : Array[Map[String, CellValue]] = []
   inspect(render_jsonl(layout, rows), content="")
 }
+
+///|
+test "render_layout：有空洞时行数 = 2 + 表头 + 字段数 + 空行 + HOLES 行" {
+  // **对外契约变更**（CB-21-3，2026-11-29）：`HOLES:` 是新增的一行机读汇总。
+  // 无空洞的布局行数契约**不变**（上一条测试继续锁 9 行）；有空洞时多出
+  // 「空行 + HOLES 行」两行。两条测试一起把契约钉成：
+  //
+  //   无洞：2 + 1 + fields.length()
+  //   有洞：2 + 1 + fields.length() + 2
+  //
+  // 之所以不能只在末尾追加而不留空行：`HOLES:` 属于「汇总段」，与 `WARNING:`
+  // 段同构（都空一行再接），否则它会看起来像一条字段行。
+  let layout = compile_layout(
+    parse_copybook(
+      "01 R.\n    05 A PIC X(1).\n    05 FILLER PIC X(2).\n    05 B PIC X(1).\n",
+    ),
+  )
+  let fields = layout.fields.length()
+  let lines = render_layout(layout).split("\n").collect()
+  inspect(fields, content="2")
+  inspect(lines.length(), content="7")
+  // 末行就是 HOLES
+  assert_true(
+    lines[lines.length() - 1].contains("HOLES: 1 segment(s), 2 byte(s)"),
+  )
+  // 无空洞的布局不追加（同布局去掉 FILLER 后回到 2 + 1 + fields）
+  let clean = compile_layout(
+    parse_copybook("01 R.\n    05 A PIC X(1).\n    05 B PIC X(1).\n"),
+  )
+  inspect(render_layout(clean).split("\n").collect().length(), content="5")
+}
