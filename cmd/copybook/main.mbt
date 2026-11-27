@@ -410,15 +410,18 @@ fn warn_layout_holes(layout : @lib.RecordLayout) -> Unit {
 
 ///|
 /// 不混进字段数里（源文本里写了 SYNC 却一个偏移都没变，用户需要知道）。
+///
+/// **文案只有一个实现**（CB-22-1，2026-11-27 审计）：这里此前手写了一遍，
+/// 与 `@lib.layout_sync_inert_warning` 分叉 12 个字符（少了 ` on this layout`）——
+/// `layout` 与 `decode` / `verify` 对同一件事说两种话。与 CB-21-2 同一条教训：
+/// 结论一旦有两个书写点，就一定会漂移。
 fn warn_sync_layout(layout : @lib.RecordLayout) -> Unit {
   let sync = layout.sync_summary()
   if sync.affected_leaves > 0 {
     eprintln(@lib.layout_sync_warning(sync.affected_leaves))
   }
   if sync.inert_groups.length() > 0 {
-    eprintln(
-      "warning: \{sync.inert_groups.length()} group item(s) declare SYNC/SYNCHRONIZED but contain no basic item: \{sync.inert_groups.join(", ")}. No offset changes; the declaration has no effect.",
-    )
+    eprintln(@lib.layout_sync_inert_warning(sync.inert_groups))
   }
 }
 
