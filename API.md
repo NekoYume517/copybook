@@ -504,6 +504,27 @@ HOLES: <段数> segment(s), <字节数> byte(s)
 （`RecordLayout::layout_static_gaps` 只是把两者在 `values = None` 下的结果
 并起来），不新起一套区间逻辑。
 
+**`HOLES:` 是上界，不是这一行的实际缺口**（CB-22-4，2026-11-27 补）：
+
+| 谁 | 看什么 | 得到什么 |
+|---|---|---|
+| `HOLES:` 行 / `layout_static_gaps` | `values = None`，即**每个视图都不解出** | **静态上界**：这份布局最多能有多少字节无字段承载 |
+| `gap_carrier_report` / `__tail_gap` / `__filler_gap` | 这一行**实际写了什么** | **实际缺口**：这一行还剩多少字节无归属 |
+
+两者不必相等，也不该相等。实测（`M X(4)` + `V2 REDEFINES M X(6)` + `V3
+REDEFINES M X(8)`，记录 8 字节）：
+
+```
+layout  : HOLES: 1 segment(s), 4 byte(s)      <- 三视图全不解出时的宽度
+decode  : {"R.M":"ABCD","R.V2":"ABCDEF","R.V3":null,
+           "__tail_hex":"ffee","__tail_gap":[[6,8]]}   <- 这一行只露 2 字节
+```
+
+`V2` 解出来了、写到 6，尾部洞缩成 `[6,8)`。**上界只在「所有视图都解不出」
+时取到**；某一行的实际洞是它的子集。读 `HOLES:` 时把它当「这份布局的风险
+面积」，不要当「这一行丢了几字节」——后者看该行的 `__*_gap`。回归：
+`src/holes_bound_vs_actual_wbtest.mbt`。
+
 `decode` / `encode` / `verify` 在读到同一份布局时，会在 **stderr** 上打
 同一条告警（`layout_hole_warning`），说明那几段字节**只活在
 `decode → JSONL → encode` 这条旁道里**：一旦离开（手写 JSONL、外部工具
