@@ -29,7 +29,7 @@
 
 ## 安装与运行
 
-**作为库依赖**（已发布到 [mooncakes.io](https://mooncakes.io/docs/NekoYume517/copybook)）：
+**作为库依赖**（已发布到 [mooncakes.io](https://mooncakes.io/docs/NekoYume517/copybook)，当前版本 `0.1.2`）：
 
 ```bash
 moon add NekoYume517/copybook
