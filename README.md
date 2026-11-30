@@ -2,7 +2,7 @@
 
 **COBOL copybook 编译器：把大型机定长记录解码成类型化数据。**
 
-[![MoonBit](https://img.shields.io/badge/MoonBit-0.1.20261102-blueviolet)](https://www.moonbitlang.com/)
+[![MoonBit](https://img.shields.io/badge/MoonBit-1.0.0--rc1*-blueviolet)](https://www.moonbitlang.com/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
 ---
@@ -48,7 +48,18 @@ let row = @copybook.decode_record(layout, record_bytes)
 moon check
 moon test
 moon run cmd/copybook -- layout --copybook examples/customer.cpy
+
+# 同一个 CLI 也能跑在 js 后端上（CI 会跑；用于确认纯计算部分不依赖 wasm）
+moon run --target js cmd/copybook -- layout --copybook examples/customer.cpy
 ```
+
+**工具链：MoonBit 1.0（`moon 0.1.20261126` / `moonc v1.0.0-rc1`）**，`moon.mod` 里
+`preferred_target = "wasm"`。CI 取 CDN 的 `latest`，然后硬校验 `moon` 不低于
+`0.1.20261124`、`moonc` 不低于 `v1.0.0-rc1`：CDN 只发布 `latest`（带日期的版本 403），
+能钉住的是**语法级别**而不是某个字节版本，所以约束写成「不得更旧」。
+2026-11-30 的工具链 1.0 迁移实测记录见 `../HANDOVER.md` 第三十二节；本仓在
+`moonc v1.0.0-rc1` 上的四门（check / fmt --check / test --release / build）与
+`wasm`、`wasm-gc`、`js` 三个后端的测试都是全绿，**没有需要改源码的语法断裂**。
 
 ## 用法
 
@@ -329,6 +340,7 @@ MoonBit 语法要点见 [MOONBIT-GUIDE.md](MOONBIT-GUIDE.md)。
 ## License
 
 Apache-2.0，见 [LICENSE](LICENSE)。
+
 
 
 
